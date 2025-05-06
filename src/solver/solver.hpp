@@ -68,6 +68,16 @@ public:
     void setTimeoutManager(std::shared_ptr<TimeoutManager> manager);
     
     /**
+     * Validates and fixes the final placement if necessary
+     */
+    void validateFinalPlacement();
+
+    /**
+     * Calculate area directly from module positions as a fallback
+     */
+    void calculateAreaFromModules();
+    
+    /**
      * Loads modules and symmetry constraints
      * 
      * @param modules Map of module names to modules

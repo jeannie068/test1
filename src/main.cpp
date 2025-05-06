@@ -88,8 +88,8 @@ int main(int argc, char* argv[]) {
     solver.setRandomSeed(static_cast<unsigned int>(time(nullptr)));
     
     // Create the timeout manager with emergency shutdown after 10 seconds
-    // Main timeout is set to 290 seconds (4m 50s)
-    auto timeoutManager = make_shared<TimeoutManager>(240, 10);
+    // Main timeout is set to 240 seconds (4m)
+    auto timeoutManager = make_shared<TimeoutManager>(150, 10);
     
     // Set a custom emergency callback that writes the output before exiting
     timeoutManager->setEmergencyCallback([&]() {

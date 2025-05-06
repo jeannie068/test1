@@ -43,19 +43,30 @@ bool HBStarTree::pack() {
     // Find the minimum and maximum coordinates from all modules
     for (const auto& pair : modules) {
         const auto& module = pair.second;
-        minX = std::min(minX, module->getX());
-        minY = std::min(minY, module->getY());
-        maxX = std::max(maxX, module->getX() + module->getWidth());
-        maxY = std::max(maxY, module->getY() + module->getHeight());
+        if (module) {
+            minX = std::min(minX, module->getX());
+            minY = std::min(minY, module->getY());
+            maxX = std::max(maxX, module->getX() + module->getWidth());
+            maxY = std::max(maxY, module->getY() + module->getHeight());
+        }
     }
     
-    // Update total area - FIXED to use (maxX - minX) * (maxY - minY)
-    totalArea = (maxX - minX) * (maxY - minY);
+    // Update total area - ensure we're using correct min/max values
+    if (minX < maxX && minY < maxY) {
+        totalArea = (maxX - minX) * (maxY - minY);
+    } else {
+        cerr << "Warning: Invalid area calculation (minX=" << minX << ", minY=" << minY 
+             << ", maxX=" << maxX << ", maxY=" << maxY << ")" << endl;
+        totalArea = 0;
+    }
     
     // Update contour nodes
     updateContourNodes();
     
     isPacked = true;
+    
+    // Validate no overlaps in the final placement
+    validatePlacement();
     
     return true;
 }
@@ -70,9 +81,13 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
         case HBNodeType::MODULE: {
             // Pack a regular module
             const string& moduleName = node->getModuleName();
-            auto module = modules[moduleName];
+            auto moduleIt = modules.find(moduleName);
+            if (moduleIt == modules.end() || !moduleIt->second) {
+                cerr << "Warning: Module " << moduleName << " not found or null" << endl;
+                return;
+            }
             
-            if (!module) return;
+            auto module = moduleIt->second;
             
             int x = 0, y = 0;
             
@@ -81,33 +96,56 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
                 if (node->isLeftChild()) {
                     // Left child: place to the right of parent
                     if (node->getParent()->getType() == HBNodeType::MODULE) {
-                        auto parentModule = modules[node->getParent()->getModuleName()];
-                        if (parentModule) {
+                        auto parentName = node->getParent()->getModuleName();
+                        auto parentIt = modules.find(parentName);
+                        if (parentIt != modules.end() && parentIt->second) {
+                            auto parentModule = parentIt->second;
                             x = parentModule->getX() + parentModule->getWidth();
                         }
                     } else if (node->getParent()->getType() == HBNodeType::HIERARCHY) {
-                        auto asfTree = node->getParent()->getASFTree();
+                        auto hierarchyNode = node->getParent();
+                        auto asfTree = hierarchyNode->getASFTree();
                         if (asfTree) {
-                            x = static_cast<int>(asfTree->getSymmetryAxisPosition());
+                            // Find rightmost module in the symmetry island
+                            int rightmost = 0;
+                            for (const auto& pair : asfTree->getModules()) {
+                                const auto& m = pair.second;
+                                rightmost = max(rightmost, m->getX() + m->getWidth());
+                            }
+                            x = rightmost;
                         }
                     } else if (node->getParent()->getType() == HBNodeType::CONTOUR) {
                         int x1, y1, x2, y2;
                         node->getParent()->getContour(x1, y1, x2, y2);
-                        x = x2;
+                        x = x2; // Use the right end of the contour
                     }
                 } else {
                     // Right child: same x-coordinate as parent
                     if (node->getParent()->getType() == HBNodeType::MODULE) {
-                        auto parentModule = modules[node->getParent()->getModuleName()];
-                        if (parentModule) {
+                        auto parentName = node->getParent()->getModuleName();
+                        auto parentIt = modules.find(parentName);
+                        if (parentIt != modules.end() && parentIt->second) {
+                            auto parentModule = parentIt->second;
                             x = parentModule->getX();
                         }
                     } else if (node->getParent()->getType() == HBNodeType::HIERARCHY) {
-                        x = 0;
+                        auto hierarchyNode = node->getParent();
+                        auto asfTree = hierarchyNode->getASFTree();
+                        if (asfTree) {
+                            // Use the leftmost x-coordinate of the hierarchy
+                            int leftmost = numeric_limits<int>::max();
+                            for (const auto& pair : asfTree->getModules()) {
+                                const auto& m = pair.second;
+                                leftmost = min(leftmost, m->getX());
+                            }
+                            x = (leftmost != numeric_limits<int>::max()) ? leftmost : 0;
+                        } else {
+                            x = 0; // Default if no ASF-B*-tree
+                        }
                     } else if (node->getParent()->getType() == HBNodeType::CONTOUR) {
                         int x1, y1, x2, y2;
                         node->getParent()->getContour(x1, y1, x2, y2);
-                        x = x1;
+                        x = x1; // Use the left end of the contour
                     }
                 }
             }
@@ -129,25 +167,35 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
             auto asfTree = node->getASFTree();
             if (!asfTree) return;
             
-            // Pack the ASF-B*-tree
+            // First, pack the ASF-B*-tree at origin (0,0)
             asfTree->pack();
             
-            // Get the bounding rectangle of the symmetry island
-            int minX = std::numeric_limits<int>::max();
-            int minY = std::numeric_limits<int>::max();
-            int symMaxX = 0;
-            int symMaxY = 0;
+            // Calculate the bounding box of the symmetry island
+            int minX = numeric_limits<int>::max();
+            int minY = numeric_limits<int>::max();
+            int maxX = 0;
+            int maxY = 0;
             
             for (const auto& pair : asfTree->getModules()) {
                 const auto& module = pair.second;
-                
-                minX = min(minX, module->getX());
-                minY = min(minY, module->getY());
-                symMaxX = max(symMaxX, module->getX() + module->getWidth());
-                symMaxY = max(symMaxY, module->getY() + module->getHeight());
+                if (module) {
+                    minX = min(minX, module->getX());
+                    minY = min(minY, module->getY());
+                    maxX = max(maxX, module->getX() + module->getWidth());
+                    maxY = max(maxY, module->getY() + module->getHeight());
+                }
             }
             
-            // Calculate the position for the symmetry island
+            // Calculate width and height of the symmetry island
+            int width = maxX - minX;
+            int height = maxY - minY;
+            
+            if (width <= 0 || height <= 0) {
+                cerr << "Warning: Invalid symmetry island dimensions: " << width << "x" << height << endl;
+                break;
+            }
+            
+            // Calculate position for the symmetry island
             int x = 0, y = 0;
             
             // Calculate x-coordinate based on B*-tree rules
@@ -155,39 +203,62 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
                 if (node->isLeftChild()) {
                     // Left child: place to the right of parent
                     if (node->getParent()->getType() == HBNodeType::MODULE) {
-                        auto parentModule = modules[node->getParent()->getModuleName()];
-                        if (parentModule) {
+                        auto parentName = node->getParent()->getModuleName();
+                        auto parentIt = modules.find(parentName);
+                        if (parentIt != modules.end() && parentIt->second) {
+                            auto parentModule = parentIt->second;
                             x = parentModule->getX() + parentModule->getWidth();
                         }
                     } else if (node->getParent()->getType() == HBNodeType::HIERARCHY) {
-                        auto parentAsfTree = node->getParent()->getASFTree();
+                        auto parentNode = node->getParent();
+                        auto parentAsfTree = parentNode->getASFTree();
                         if (parentAsfTree) {
-                            x = static_cast<int>(parentAsfTree->getSymmetryAxisPosition());
+                            // Find rightmost module in the parent hierarchy
+                            int rightmost = 0;
+                            for (const auto& pair : parentAsfTree->getModules()) {
+                                const auto& m = pair.second;
+                                rightmost = max(rightmost, m->getX() + m->getWidth());
+                            }
+                            x = rightmost;
                         }
                     } else if (node->getParent()->getType() == HBNodeType::CONTOUR) {
                         int x1, y1, x2, y2;
                         node->getParent()->getContour(x1, y1, x2, y2);
-                        x = x2;
+                        x = x2; // Use the right end of the contour
                     }
                 } else {
                     // Right child: same x-coordinate as parent
                     if (node->getParent()->getType() == HBNodeType::MODULE) {
-                        auto parentModule = modules[node->getParent()->getModuleName()];
-                        if (parentModule) {
+                        auto parentName = node->getParent()->getModuleName();
+                        auto parentIt = modules.find(parentName);
+                        if (parentIt != modules.end() && parentIt->second) {
+                            auto parentModule = parentIt->second;
                             x = parentModule->getX();
                         }
                     } else if (node->getParent()->getType() == HBNodeType::HIERARCHY) {
-                        x = 0;
+                        auto parentNode = node->getParent();
+                        auto parentAsfTree = parentNode->getASFTree();
+                        if (parentAsfTree) {
+                            // Use the leftmost x-coordinate of the parent hierarchy
+                            int leftmost = numeric_limits<int>::max();
+                            for (const auto& pair : parentAsfTree->getModules()) {
+                                const auto& m = pair.second;
+                                leftmost = min(leftmost, m->getX());
+                            }
+                            x = (leftmost != numeric_limits<int>::max()) ? leftmost : 0;
+                        } else {
+                            x = 0; // Default if no ASF-B*-tree
+                        }
                     } else if (node->getParent()->getType() == HBNodeType::CONTOUR) {
                         int x1, y1, x2, y2;
                         node->getParent()->getContour(x1, y1, x2, y2);
-                        x = x1;
+                        x = x1; // Use the left end of the contour
                     }
                 }
             }
             
             // Calculate y-coordinate using the horizontal contour
-            y = horizontalContour->getHeight(x, x + (symMaxX - minX));
+            y = horizontalContour->getHeight(x, x + width);
             
             // Shift all modules in the symmetry island
             int deltaX = x - minX;
@@ -195,12 +266,31 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
             
             for (const auto& pair : asfTree->getModules()) {
                 const auto& module = pair.second;
-                module->setPosition(module->getX() + deltaX, module->getY() + deltaY);
+                if (module) {
+                    int newX = module->getX() + deltaX;
+                    int newY = module->getY() + deltaY;
+                    
+                    // Ensure no negative coordinates
+                    if (newX < 0) newX = 0;
+                    if (newY < 0) newY = 0;
+                    
+                    module->setPosition(newX, newY);
+                }
             }
             
-            // Update contours
-            horizontalContour->addSegment(x, x + (symMaxX - minX), y + (symMaxY - minY));
-            verticalContour->addSegment(y, y + (symMaxY - minY), x + (symMaxX - minX));
+            // Update contours with the actual module positions
+            for (const auto& pair : asfTree->getModules()) {
+                const auto& module = pair.second;
+                if (module) {
+                    int modX = module->getX();
+                    int modY = module->getY();
+                    int modWidth = module->getWidth();
+                    int modHeight = module->getHeight();
+                    
+                    horizontalContour->addSegment(modX, modX + modWidth, modY + modHeight);
+                    verticalContour->addSegment(modY, modY + modHeight, modX + modWidth);
+                }
+            }
             
             break;
         }
@@ -209,7 +299,7 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
             break;
     }
     
-    // Recursively pack children
+    // Recursively pack left child first, then right child
     if (node->getLeftChild()) {
         packSubtree(node->getLeftChild());
     }
@@ -219,19 +309,63 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
 }
 
 /**
+ * Validates that the placement has no overlaps
+ */
+bool HBStarTree::validatePlacement() const {
+    bool valid = true;
+    
+    // Check each pair of modules for overlap
+    for (auto it1 = modules.begin(); it1 != modules.end(); ++it1) {
+        const auto& module1 = it1->second;
+        if (!module1) continue;
+        
+        for (auto it2 = next(it1); it2 != modules.end(); ++it2) {
+            const auto& module2 = it2->second;
+            if (!module2) continue;
+            
+            // Check for overlap using box overlap test
+            bool overlaps = 
+                module1->getX() < module2->getX() + module2->getWidth() &&
+                module1->getX() + module1->getWidth() > module2->getX() &&
+                module1->getY() < module2->getY() + module2->getHeight() &&
+                module1->getY() + module1->getHeight() > module2->getY();
+                
+            if (overlaps) {
+                // cerr << "Overlap detected between " << it1->first 
+                //      << " (" << module1->getX() << "," << module1->getY() 
+                //      << "," << module1->getWidth() << "," << module1->getHeight() 
+                //      << ") and " << it2->first 
+                //      << " (" << module2->getX() << "," << module2->getY() 
+                //      << "," << module2->getWidth() << "," << module2->getHeight() 
+                //      << ")" << endl;
+                valid = false;
+                
+                // Emergency fix: move the second module below the first one
+                // cerr << "Emergency fix: moving " << it2->first << " below " << it1->first << endl;
+                module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+            }
+        }
+    }
+    
+    return valid;
+}
+
+/**
  * Updates contour nodes after changing the ASF-B*-tree of a symmetry group
  */
 void HBStarTree::updateContourNodes() {
     // Process each hierarchy node
     for (const auto& pair : symmetryGroupNodes) {
         auto hierarchyNode = pair.second;
-        auto asfTree = hierarchyNode->getASFTree();
+        if (!hierarchyNode) continue;
         
+        auto asfTree = hierarchyNode->getASFTree();
         if (!asfTree) continue;
         
         // Get the contours of the symmetry island
         auto contours = asfTree->getContours();
         auto horizontalContour = contours.first;
+        if (!horizontalContour) continue;
         
         // Get the horizontal contour segments
         auto segments = horizontalContour->getSegments();
@@ -247,6 +381,8 @@ void HBStarTree::updateContourNodes() {
         while (!queue.empty()) {
             auto current = queue.front();
             queue.pop();
+            
+            if (!current) continue;
             
             if (current->getType() == HBNodeType::CONTOUR) {
                 existingContourNodes.push_back(current);
@@ -264,9 +400,12 @@ void HBStarTree::updateContourNodes() {
         vector<shared_ptr<HBStarTreeNode>> newContourNodes;
         for (size_t i = 0; i < segments.size(); ++i) {
             auto contourNode = make_shared<HBStarTreeNode>(HBNodeType::CONTOUR, 
-                                                             pair.first + "_contour_" + to_string(i));
-            contourNode->setContour(segments[i].start, segments[i].height, segments[i].end, segments[i].height);
-            newContourNodes.push_back(contourNode);
+                                                           pair.first + "_contour_" + to_string(i));
+            if (contourNode) {
+                contourNode->setContour(segments[i].start, segments[i].height, 
+                                       segments[i].end, segments[i].height);
+                newContourNodes.push_back(contourNode);
+            }
         }
         
         // Connect contour nodes
@@ -285,13 +424,15 @@ void HBStarTree::updateContourNodes() {
         // Find dangling nodes - nodes whose parents were contour nodes that no longer exist
         vector<shared_ptr<HBStarTreeNode>> danglingNodes;
         for (const auto& oldContourNode : existingContourNodes) {
-            if (oldContourNode->getRightChild()) {
+            if (oldContourNode && oldContourNode->getRightChild()) {
                 danglingNodes.push_back(oldContourNode->getRightChild());
             }
         }
         
         // Reassign dangling nodes
         for (const auto& danglingNode : danglingNodes) {
+            if (!danglingNode) continue;
+            
             // Find the nearest contour node
             auto nearestContourNode = findNearestContourNode(danglingNode);
             
@@ -304,32 +445,14 @@ void HBStarTree::updateContourNodes() {
                     // Find the leftmost skewed child
                     auto leftmostSkewedChild = findLeftmostSkewedChild(nearestContourNode->getRightChild());
                     
-                    leftmostSkewedChild->setLeftChild(danglingNode);
-                    danglingNode->setParent(leftmostSkewedChild);
+                    if (leftmostSkewedChild) {
+                        leftmostSkewedChild->setLeftChild(danglingNode);
+                        danglingNode->setParent(leftmostSkewedChild);
+                    }
                 }
             }
         }
     }
-}
-
-/**
- * Validates that all symmetry islands are placed correctly
- */
-bool HBStarTree::validateSymmetryIslandPlacement() const {
-    // Check each symmetry group
-    for (const auto& group : symmetryGroups) {
-        auto it = symmetryGroupNodes.find(group->getName());
-        if (it == symmetryGroupNodes.end()) continue;
-        
-        auto hierarchyNode = it->second;
-        auto asfTree = hierarchyNode->getASFTree();
-        
-        if (!asfTree || !asfTree->isSymmetricFeasible()) {
-            return false;
-        }
-    }
-    
-    return true;
 }
 
 /**
@@ -348,7 +471,7 @@ void HBStarTree::repackAffectedSubtrees() {
     // Initialize vertical contour with a segment at x=0
     verticalContour->addSegment(0, std::numeric_limits<int>::max(), 0);
     
-    // If root is modified, we can directly pack the entire tree
+    // If root is modified, we need to pack the entire tree
     bool rootModified = false;
     for (const auto& node : modifiedSubtrees) {
         if (node == root) {
@@ -358,22 +481,25 @@ void HBStarTree::repackAffectedSubtrees() {
     }
     
     if (rootModified) {
-        // If root is modified, pack the entire tree
+        // Pack the entire tree
         packSubtree(root);
     } else {
-        // Optimize: Only process nodes that need repacking
-        // Find the minimal set of nodes that need repacking
+        // Find the minimal set of subtrees to repack
         vector<shared_ptr<HBStarTreeNode>> rootsToRepack;
         
         for (const auto& node : modifiedSubtrees) {
-            // Skip if this node is already covered by another node in rootsToRepack
+            if (!node) continue;
+            
+            // Skip if already covered by an ancestor in rootsToRepack
             bool alreadyCovered = false;
-            for (const auto& root : rootsToRepack) {
+            for (const auto& repackRoot : rootsToRepack) {
+                if (!repackRoot) continue;
+                
                 auto current = node;
-                while (current && current != root) {
+                while (current && current != repackRoot) {
                     current = current->getParent();
                 }
-                if (current == root) {
+                if (current == repackRoot) {
                     alreadyCovered = true;
                     break;
                 }
@@ -384,36 +510,65 @@ void HBStarTree::repackAffectedSubtrees() {
             }
         }
         
-        // Pack each root node
+        // Process in bottom-up order (lowest depth first)
+        // Sort by depth in tree (deepest first)
+        sort(rootsToRepack.begin(), rootsToRepack.end(),
+             [](const shared_ptr<HBStarTreeNode>& a, const shared_ptr<HBStarTreeNode>& b) {
+                 // Count depth
+                 int depthA = 0, depthB = 0;
+                 auto currA = a, currB = b;
+                 
+                 while (currA && currA->getParent()) {
+                     depthA++;
+                     currA = currA->getParent();
+                 }
+                 
+                 while (currB && currB->getParent()) {
+                     depthB++;
+                     currB = currB->getParent();
+                 }
+                 
+                 return depthA > depthB;
+             });
+        
+        // Update contours with already placed nodes
         for (const auto& node : rootsToRepack) {
-            // Update contours with already placed nodes
+            if (!node) continue;
             updateContourForSubtree(node);
-            
-            // Pack the subtree
             packSubtree(node);
         }
     }
     
-    // Calculate total area - more efficiently by tracking min/max during packing
+    // Calculate total area
     int minX = std::numeric_limits<int>::max(), minY = std::numeric_limits<int>::max();
     int maxX = 0, maxY = 0;
     
     for (const auto& pair : modules) {
         const auto& module = pair.second;
-        minX = std::min(minX, module->getX());
-        minY = std::min(minY, module->getY());
-        maxX = std::max(maxX, module->getX() + module->getWidth());
-        maxY = std::max(maxY, module->getY() + module->getHeight());
+        if (module) {
+            minX = std::min(minX, module->getX());
+            minY = std::min(minY, module->getY());
+            maxX = std::max(maxX, module->getX() + module->getWidth());
+            maxY = std::max(maxY, module->getY() + module->getHeight());
+        }
     }
     
     // Update total area
-    totalArea = (maxX - minX) * (maxY - minY);
+    if (minX < maxX && minY < maxY) {
+        totalArea = (maxX - minX) * (maxY - minY);
+    } else {
+        cerr << "Warning: Invalid area calculation in repackAffectedSubtrees" << endl;
+        totalArea = 0;
+    }
     
     // Update contour nodes
     updateContourNodes();
     
     // Clear the modified set
     modifiedSubtrees.clear();
+    
+    // Validate placement after repacking
+    validatePlacement();
 }
 
 void HBStarTree::updateContourForSubtree(shared_ptr<HBStarTreeNode> node) {
@@ -427,15 +582,18 @@ void HBStarTree::updateContourForSubtree(shared_ptr<HBStarTreeNode> node) {
         auto current = nodeQueue.front();
         nodeQueue.pop();
         
+        if (!current) continue;
+        
         // Skip this subtree
         if (current == node) continue;
         
         // Process this node
         if (current->getType() == HBNodeType::MODULE) {
             const string& moduleName = current->getModuleName();
-            auto module = modules[moduleName];
-            
-            if (module) {
+            auto it = modules.find(moduleName);
+            if (it != modules.end() && it->second) {
+                auto module = it->second;
+                
                 // Update contours with this module
                 int x = module->getX();
                 int y = module->getY();
@@ -452,14 +610,15 @@ void HBStarTree::updateContourForSubtree(shared_ptr<HBStarTreeNode> node) {
                 // Update contours with all modules in this symmetry island
                 for (const auto& pair : asfTree->getModules()) {
                     const auto& module = pair.second;
-                    
-                    int x = module->getX();
-                    int y = module->getY();
-                    int width = module->getWidth();
-                    int height = module->getHeight();
-                    
-                    horizontalContour->addSegment(x, x + width, y + height);
-                    verticalContour->addSegment(y, y + height, x + width);
+                    if (module) {
+                        int x = module->getX();
+                        int y = module->getY();
+                        int width = module->getWidth();
+                        int height = module->getHeight();
+                        
+                        horizontalContour->addSegment(x, x + width, y + height);
+                        verticalContour->addSegment(y, y + height, x + width);
+                    }
                 }
             }
         }

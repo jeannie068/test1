@@ -34,6 +34,11 @@ private:
     double minProbChangeRep = 0.02;
     double minProbConvertSym = 0.02;
     
+    // Helper method to calculate probability for an operation
+    double calculateProbability(const std::string& operation, 
+                               double totalWeightedImprovement,
+                               double totalSuccessRate);
+    
 public:
     /**
      * Constructor

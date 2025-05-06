@@ -55,14 +55,20 @@ SimulatedAnnealing::SimulatedAnnealing(shared_ptr<HBStarTree> initialSolution,
     rng.seed(static_cast<unsigned int>(time(nullptr)));
     
     // Pack initial solution to get valid coordinates and area
-    currentSolution->pack();
-    
-    // Calculate initial cost
-    currentCost = calculateCost(currentSolution);
-    
-    // Initialize best solution
-    bestSolution = currentSolution->clone();
-    bestCost = currentCost;
+    if (currentSolution) {
+        currentSolution->pack();
+        
+        // Create a deep copy for the best solution
+        bestSolution = currentSolution->clone();
+        
+        // Calculate initial cost
+        currentCost = calculateCost(currentSolution);
+        bestCost = currentCost;
+    } else {
+        cerr << "Warning: Null initial solution provided to SA" << endl;
+        currentCost = numeric_limits<int>::max();
+        bestCost = numeric_limits<int>::max();
+    }
 }
 
 /**
@@ -87,6 +93,10 @@ void SimulatedAnnealing::setPerturbationProbabilities(double rotate, double move
     probSwap = swap / sum;
     probChangeRepresentative = changeRep / sum;
     probConvertSymmetryType = convertSym / sum;
+    
+    // Update adaptive perturbation with same values
+    adaptivePerturbation = AdaptivePerturbation(probRotate, probMove, probSwap, 
+                                                probChangeRepresentative, probConvertSymmetryType);
 }
 
 /**
@@ -101,8 +111,14 @@ void SimulatedAnnealing::setCostWeights(double area, double wirelength) {
  * Calculates the cost of a solution
  */
 int SimulatedAnnealing::calculateCost(const shared_ptr<HBStarTree>& solution) const {
-    // Area cost
+    if (!solution) return numeric_limits<int>::max();
+    
+    // Area cost - with penalty for invalid area
     int areaCost = solution->getArea();
+    if (areaCost <= 0) {
+        cerr << "Warning: Invalid area in cost calculation" << endl;
+        return numeric_limits<int>::max();
+    }
     
     // Wirelength cost
     int wirelengthCost = solution->getWireLength();
@@ -114,7 +130,6 @@ int SimulatedAnnealing::calculateCost(const shared_ptr<HBStarTree>& solution) co
 /**
  * Performs a random perturbation on the current solution
  */
-// In SimulatedAnnealing::perturb() - improve chances of perturbation success
 bool SimulatedAnnealing::perturb() {
     // Check for timeout
     if (checkTimeout()) {
@@ -124,7 +139,7 @@ bool SimulatedAnnealing::perturb() {
     // Choose perturbation type based on adaptive probabilities
     double randVal = uniformDist(rng);
     bool result = false;
-    int maxAttempts = 5;  // Try multiple times to get a successful perturbation
+    const int maxAttempts = 3;  // Reduced from 5 to 3 for speed
     
     for (int attempt = 0; attempt < maxAttempts; attempt++) {
         if (randVal < adaptivePerturbation.getRotateProbability()) {
@@ -163,7 +178,6 @@ bool SimulatedAnnealing::perturb() {
     
     return result;
 }
-
 
 /**
  * Rotates a random module
@@ -216,11 +230,11 @@ bool SimulatedAnnealing::perturbChangeRepresentative() {
     // Get a random module from the symmetry group
     const auto& symmetryGroups = currentSolution->getSymmetryGroups();
     auto it = find_if(symmetryGroups.begin(), symmetryGroups.end(),
-                          [&symmetryGroupName](const shared_ptr<SymmetryGroup>& group) {
-                              return group->getName() == symmetryGroupName;
-                          });
+                      [&symmetryGroupName](const shared_ptr<SymmetryGroup>& group) {
+                          return group && group->getName() == symmetryGroupName;
+                      });
     
-    if (it == symmetryGroups.end() || (*it)->getSymmetryPairs().empty()) {
+    if (it == symmetryGroups.end() || !(*it) || (*it)->getSymmetryPairs().empty()) {
         return false;
     }
     
@@ -249,14 +263,22 @@ bool SimulatedAnnealing::perturbConvertSymmetryType() {
  * Select a random module
  */
 string SimulatedAnnealing::selectRandomModule() const {
+    if (!currentSolution) return "";
+    
     const auto& modules = currentSolution->getModules();
     if (modules.empty()) return "";
     
     // Convert map to vector for random selection
     vector<string> moduleNames;
+    moduleNames.reserve(modules.size());
+    
     for (const auto& pair : modules) {
-        moduleNames.push_back(pair.first);
+        if (pair.second) {
+            moduleNames.push_back(pair.first);
+        }
     }
+    
+    if (moduleNames.empty()) return "";
     
     uniform_int_distribution<int> dist(0, moduleNames.size() - 1);
     return moduleNames[dist(rng)];
@@ -266,37 +288,68 @@ string SimulatedAnnealing::selectRandomModule() const {
  * Select a random symmetry group
  */
 string SimulatedAnnealing::selectRandomSymmetryGroup() const {
+    if (!currentSolution) return "";
+    
     const auto& symmetryGroups = currentSolution->getSymmetryGroups();
     if (symmetryGroups.empty()) return "";
     
-    uniform_int_distribution<int> dist(0, symmetryGroups.size() - 1);
-    return symmetryGroups[dist(rng)]->getName();
+    // Filter valid symmetry groups
+    vector<string> validGroups;
+    for (const auto& group : symmetryGroups) {
+        if (group) {
+            validGroups.push_back(group->getName());
+        }
+    }
+    
+    if (validGroups.empty()) return "";
+    
+    uniform_int_distribution<int> dist(0, validGroups.size() - 1);
+    return validGroups[dist(rng)];
 }
 
 /**
  * Select a random node (module or symmetry group)
  */
 string SimulatedAnnealing::selectRandomNode() const {
+    if (!currentSolution) return "";
+    
     // Decide whether to select a module or a symmetry group
     const auto& modules = currentSolution->getModules();
     const auto& symmetryGroups = currentSolution->getSymmetryGroups();
     
-    int totalNodes = modules.size() + symmetryGroups.size();
+    // Build vectors of valid names
+    vector<string> validModules;
+    for (const auto& pair : modules) {
+        if (pair.second) {
+            validModules.push_back(pair.first);
+        }
+    }
+    
+    vector<string> validGroups;
+    for (const auto& group : symmetryGroups) {
+        if (group) {
+            validGroups.push_back(group->getName());
+        }
+    }
+    
+    int totalNodes = validModules.size() + validGroups.size();
     if (totalNodes == 0) return "";
     
     uniform_int_distribution<int> dist(0, totalNodes - 1);
     int index = dist(rng);
     
-    if (index < static_cast<int>(modules.size())) {
+    if (index < static_cast<int>(validModules.size())) {
         // Select a module
-        auto it = modules.begin();
-        advance(it, index);
-        return it->first;
+        return validModules[index];
     } else {
         // Select a symmetry group
-        index -= modules.size();
-        return symmetryGroups[index]->getName();
+        index -= validModules.size();
+        if (index < static_cast<int>(validGroups.size())) {
+            return validGroups[index];
+        }
     }
+    
+    return "";
 }
 
 /**
@@ -308,10 +361,51 @@ bool SimulatedAnnealing::acceptMove(int costDifference, double temperature) cons
         return true;
     }
     
-    // For moves that worsen the solution, accept with a probability based on temperature
-    // Use a more gentle probability curve to accept more moves at higher temperatures
-    double probability = exp(-costDifference / (temperature * 2));  // Multiply temperature by 2 to increase acceptance
+    // For moves that worsen the solution, accept with a probability
+    double probability = exp(-costDifference / temperature);
     return uniformDist(rng) < probability;
+}
+
+/**
+ * Validates the best solution for overlaps
+ */
+void SimulatedAnnealing::validateBestSolution() {
+    if (!bestSolution) return;
+    
+    // Get all modules
+    const auto& modules = bestSolution->getModules();
+    
+    // Check for overlaps
+    bool hasOverlap = false;
+    
+    for (auto it1 = modules.begin(); it1 != modules.end(); ++it1) {
+        const auto& module1 = it1->second;
+        if (!module1) continue;
+        
+        for (auto it2 = next(it1); it2 != modules.end(); ++it2) {
+            const auto& module2 = it2->second;
+            if (!module2) continue;
+            
+            // Check for overlap
+            if (module1->getX() < module2->getX() + module2->getWidth() &&
+                module1->getX() + module1->getWidth() > module2->getX() &&
+                module1->getY() < module2->getY() + module2->getHeight() &&
+                module1->getY() + module1->getHeight() > module2->getY()) {
+                
+                cerr << "Overlap detected in best solution between " << it1->first 
+                     << " and " << it2->first << endl;
+                hasOverlap = true;
+                
+                // Try to fix by moving module2 below module1
+                module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+            }
+        }
+    }
+    
+    if (hasOverlap) {
+        cerr << "Fixed overlaps in best solution - repacking" << endl;
+        bestSolution->pack();
+    }
 }
 
 /**
@@ -327,21 +421,45 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
         rejectedMoves = 0;
         noImprovementCount = 0;
         
+        // Make sure initial solution is valid
+        if (currentSolution) {
+            currentSolution->pack();
+            currentCost = calculateCost(currentSolution);
+            
+            // Clone best solution
+            if (!bestSolution) {
+                bestSolution = currentSolution->clone();
+                bestCost = currentCost;
+            }
+        } else {
+            cerr << "Error: No valid initial solution for SA" << endl;
+            return bestSolution;
+        }
+        
+        // Calculate total iterations before we'd reach final temperature
+        int totalTemperatureSteps = ceil(log(finalTemperature/initialTemperature) / log(coolingRate));
+        int estimatedTotalIterations = totalTemperatureSteps * iterationsPerTemperature;
+        
+        cout << "Starting SA with estimated " << estimatedTotalIterations 
+             << " iterations over " << totalTemperatureSteps << " temperature steps" << endl;
+        
         // Main annealing loop
         while (temperature > finalTemperature && noImprovementCount < noImprovementLimit) {
             // Check for timeout at the beginning of each temperature
             if (checkTimeout()) {
                 cout << "Timeout detected at temperature " << temperature 
-                          << ". Returning best solution so far." << endl;
+                     << ". Returning best solution so far." << endl;
+                validateBestSolution();
                 return bestSolution;
             }
             
             // Perform iterations at current temperature
             for (int i = 0; i < iterationsPerTemperature; ++i) {
-                // Check for timeout frequently during iterations
-                if (i % 10 == 0 && checkTimeout()) {
+                // Check for timeout every few iterations
+                if (i % 5 == 0 && checkTimeout()) {
                     cout << "Timeout detected during iteration " << i 
-                              << " at temperature " << temperature << "." << endl;
+                         << " at temperature " << temperature << "." << endl;
+                    validateBestSolution();
                     return bestSolution;
                 }
                 
@@ -349,7 +467,7 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
                     // Create a copy of the current solution
                     auto tempSolution = currentSolution->clone();
                     
-                    // Perturb the temporary solution
+                    // Perturb the solution
                     bool perturbSuccess = perturb();
                     if (!perturbSuccess) {
                         continue;  // Skip this iteration if perturbation failed
@@ -371,13 +489,18 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
                         // Record success and improvement for adaptive perturbation
                         if (costDifference < 0) {
                             adaptivePerturbation.recordSuccess(lastOperation, -costDifference);
-                        }
-                        
-                        // Update best solution if improved
-                        if (newCost < bestCost) {
-                            bestSolution = currentSolution->clone();
-                            bestCost = newCost;
-                            noImprovementCount = 0;
+                            
+                            // Update best solution if improved
+                            if (newCost < bestCost) {
+                                // Create a deep copy of the current solution
+                                bestSolution = currentSolution->clone();
+                                bestCost = newCost;
+                                
+                                cout << "New best solution found: " << bestCost << endl;
+                                noImprovementCount = 0;
+                            } else {
+                                noImprovementCount++;
+                            }
                         } else {
                             noImprovementCount++;
                         }
@@ -391,17 +514,19 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
                     totalIterations++;
                     
                     // Update perturbation probabilities periodically
-                    if (totalIterations % 100 == 0) {
+                    if (totalIterations % 50 == 0) {
                         adaptivePerturbation.updateProbabilities();
                     }
                 } 
                 catch (const runtime_error& e) {
                     if (string(e.what()).find("Timeout") != string::npos) {
                         // Timeout detected during perturbation or packing
+                        validateBestSolution();
                         return bestSolution;
                     } else {
-                        // Re-throw other runtime errors
-                        throw;
+                        // Other runtime errors - log and continue
+                        cerr << "Error during SA iteration: " << e.what() << endl;
+                        continue;
                     }
                 }
             }
@@ -409,6 +534,7 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
             // Check for timeout after a temperature cycle
             if (checkTimeout()) {
                 cout << "Timeout detected after completing temperature " << temperature << "." << endl;
+                validateBestSolution();
                 return bestSolution;
             }
             
@@ -435,7 +561,19 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
                      << ", No improvement: " << noImprovementCount 
                      << endl;
             }
+            
+            // Check if we need to accelerate cooling
+            if (noImprovementCount > noImprovementLimit / 2) {
+                // No improvement for a while, cool faster
+                temperature *= coolingRate; // Double the cooling effect
+                cout << "Accelerating cooling - no improvement for " << noImprovementCount << " iterations" << endl;
+            }
         }
+        
+        cout << "SA completed normally. Best cost: " << bestCost << endl;
+        
+        // Validate the best solution before returning
+        validateBestSolution();
         
         // Return the best solution found
         return bestSolution;
@@ -443,10 +581,17 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
     catch (const exception& e) {
         cout << "Exception in SA::run(): " << e.what() << endl;
         cout << "Returning best solution found so far." << endl;
+        
+        // Try to validate best solution even after exception
+        try {
+            validateBestSolution();
+        } catch (...) {
+            cerr << "Error during best solution validation after exception" << endl;
+        }
+        
         return bestSolution;
     }
 }
-
 
 shared_ptr<HBStarTree> SimulatedAnnealing::getBestSolution() const {
     return bestSolution;

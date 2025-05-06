@@ -153,6 +153,8 @@ public:
     void setPerturbationProbabilities(double rotate, double move, double swap, 
                                      double changeRep, double convertSym);
     
+    void validateBestSolution();
+
     /**
      * Sets the cost function weights
      * 

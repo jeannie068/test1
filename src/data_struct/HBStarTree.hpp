@@ -87,6 +87,11 @@ public:
     // Constructs an initial HB*-tree
     void constructInitialTree();
     void constructImprovedInitialTree();
+
+    /**
+     * Validates that the placement has no overlaps
+     */
+    bool validatePlacement() const;
     
     /**
      * Calculates the coordinates of all modules by packing the HB*-tree

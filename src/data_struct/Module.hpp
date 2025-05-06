@@ -26,6 +26,23 @@ public:
     int getX() const;
     int getY() const;
     bool getRotated() const;
+
+    /**
+     * Returns the distance between the modules
+     * Using minimum distance between edges
+     */
+    int getDistance(const Module& other) const;
+    /**
+     * Gets the area of overlap with another module
+     * @return 0 if no overlap
+     */
+    int getOverlapArea(const Module& other) const; 
+
+    /**
+     * Attempts to resolve overlap with another module
+     * @return true if successful
+     */
+    bool resolveOverlap(Module& other);
     
     // Setters
     void setPosition(int x, int y);

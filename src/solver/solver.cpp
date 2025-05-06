@@ -24,11 +24,12 @@ PlacementSolver::PlacementSolver()
       areaWeight(1.0),
       wirelengthWeight(0.0),
       randomSeed(static_cast<unsigned int>(time(nullptr))),
-      totalArea(0) {
+      totalArea(0),
+      timeoutManager(nullptr) {
 }
 
 PlacementSolver::~PlacementSolver() {
-
+    // Clean up any resources if needed
 }
 
 void PlacementSolver::setTimeoutManager(shared_ptr<TimeoutManager> manager) {
@@ -48,11 +49,19 @@ void PlacementSolver::loadProblem(const map<string, shared_ptr<Module>>& modules
     
     // Add modules and symmetry groups to the HB*-tree
     for (const auto& pair : modules) {
-        hbTree->addModule(pair.second);
+        if (pair.second) {
+            hbTree->addModule(pair.second);
+        } else {
+            cerr << "Warning: Null module skipped: " << pair.first << endl;
+        }
     }
     
     for (const auto& group : symmetryGroups) {
-        hbTree->addSymmetryGroup(group);
+        if (group) {
+            hbTree->addSymmetryGroup(group);
+        } else {
+            cerr << "Warning: Null symmetry group skipped" << endl;
+        }
     }
 }
 
@@ -66,14 +75,26 @@ void PlacementSolver::createInitialSolution() {
         return;
     }
     
-    // Construct an improved initial HB*-tree - Use the new method instead of constructInitialTree
-    hbTree->constructImprovedInitialTree();
-    
-    // Pack the tree to get initial coordinates
-    hbTree->pack();
-    
-    // Output initial area
-    cout << "Initial area: " << hbTree->getArea() << endl;
+    // Attempt to construct an improved initial HB*-tree
+    try {
+        hbTree->constructImprovedInitialTree();
+        
+        // Pack the tree to get initial coordinates
+        hbTree->pack();
+        
+        // Output initial area
+        cout << "Initial area: " << hbTree->getArea() << endl;
+    } 
+    catch (const exception& e) {
+        cerr << "Error while creating initial solution: " << e.what() << endl;
+        
+        // Fallback to basic construction method
+        cerr << "Attempting fallback to basic construction method..." << endl;
+        hbTree->constructInitialTree();
+        hbTree->pack();
+        
+        cout << "Initial area (fallback method): " << hbTree->getArea() << endl;
+    }
 }
 
 /**
@@ -165,7 +186,7 @@ bool PlacementSolver::solve() {
     cout << "Iterations per temperature: " << iterationsPerTemperature << endl;
     cout << "No improvement limit: " << noImprovementLimit << endl;
     
-    // Create the simulated annealing solver with optimized parameters
+    // Create the simulated annealing solver
     SimulatedAnnealing sa(hbTree, 
                           initialTemperature,
                           finalTemperature,
@@ -173,7 +194,6 @@ bool PlacementSolver::solve() {
                           iterationsPerTemperature,
                           noImprovementLimit);
     
-    // Let the adaptive perturbation handle probabilities
     sa.setPerturbationProbabilities(probRotate, probMove, probSwap, 
                                    probChangeRep, probConvertSym);
     sa.setCostWeights(areaWeight, wirelengthWeight);
@@ -217,30 +237,54 @@ bool PlacementSolver::solve() {
         }
     }
     
-    // Update the HB*-tree with the best solution from SA
-    hbTree = result;
+    // Always track the best solution we found
+    int bestAreaFound = sa.getBestCost();
     
-    // Ensure the solution is packed once to get accurate area
-    try {
-        hbTree->pack();
-    }
-    catch (const runtime_error& e) {
-        string errorMsg = e.what();
-        if (errorMsg.find("Timeout") != string::npos) {
-            cout << "Packing was interrupted by timeout. Using partial results." << endl;
-        } else {
-            throw; // Re-throw other runtime errors
+    // If we have a valid result from SA, use it
+    if (result) {
+        // Update the HB*-tree with the best solution from SA
+        hbTree = result;
+        
+        // Ensure the solution is packed
+        try {
+            hbTree->pack();
         }
-    }
-    
-    // Update statistics
-    totalArea = hbTree->getArea();
-    
-    // Check if the initial solution was better than what SA found
-    if (totalArea > initialArea) {
-        cout << "Initial solution was better than SA result. Using initial solution." << endl;
+        catch (const runtime_error& e) {
+            string errorMsg = e.what();
+            if (errorMsg.find("Timeout") != string::npos) {
+                cout << "Packing was interrupted by timeout. Using partial results." << endl;
+            } else {
+                throw; // Re-throw other runtime errors
+            }
+        }
+        
+        // Update statistics
+        totalArea = hbTree->getArea();
+        
+        // Print the area found by SA and the actual area after packing
+        cout << "Best area found by SA: " << bestAreaFound << endl;
+        cout << "Actual area after final packing: " << totalArea << endl;
+        
+        // Check if the SA solution is valid
+        if (totalArea <= 0 || totalArea > initialArea * 2) {
+            cout << "SA solution appears invalid. Using initial solution." << endl;
+            hbTree = initialSolution;
+            hbTree->pack();
+            totalArea = hbTree->getArea();
+        }
+        // Check if the initial solution was better than what SA found
+        else if (totalArea > initialArea) {
+            cout << "Initial solution was better than SA result. Using initial solution." << endl;
+            hbTree = initialSolution;
+            hbTree->pack();
+            totalArea = initialArea;
+        }
+    } else {
+        // If no result from SA, use the initial solution
+        cout << "No valid solution from SA. Using initial solution." << endl;
         hbTree = initialSolution;
-        totalArea = initialArea;
+        hbTree->pack();
+        totalArea = hbTree->getArea();
     }
     
     cout << "Final area: " << totalArea << endl;
@@ -266,6 +310,7 @@ int PlacementSolver::getSolutionArea() const {
  * Gets the solution modules with their positions
  */
 map<string, shared_ptr<Module>> PlacementSolver::getSolutionModules() const {
+    if (!hbTree) return map<string, shared_ptr<Module>>();
     return modules;
 }
 
@@ -301,55 +346,106 @@ void PlacementSolver::finalizeSolution() {
         totalArea = hbTree->getArea();
         
         // If packing makes the area worse, revert to the original area calculation
-        // This happens if the solution was already optimally packed
         if (totalArea > currentArea && currentArea > 0) {
-            totalArea = currentArea;
-            cout << "Using pre-pack area as it's better: " << totalArea << endl;
+            cerr << "Warning: Final packing increased area from " << currentArea
+                 << " to " << totalArea << endl;
+            
+            // We'll still use the updated placement for consistency
+            cout << "Solution finalized - Area: " << totalArea << endl;
         } else {
             cout << "Solution finalized - Area: " << totalArea << endl;
         }
+        
+        // Perform a final check for overlaps
+        validateFinalPlacement();
     }
     catch (const exception& e) {
         cerr << "Error finalizing solution: " << e.what() << endl;
         
         // Try a more cautious approach to get some valid area
         // This is a fallback mechanism for when we have a solution but packing fails
-        int minX = numeric_limits<int>::max();
-        int minY = numeric_limits<int>::max();
-        int maxX = 0;
-        int maxY = 0;
-        
-        bool validCoordinates = false;
-        
-        // Calculate bounding box from module positions
-        for (const auto& pair : modules) {
-            const auto& module = pair.second;
-            if (module) {
-                int x = module->getX();
-                int y = module->getY();
-                int width = module->getWidth();
-                int height = module->getHeight();
-                
-                if (x >= 0 && y >= 0) {  // Only consider valid coordinates
-                    minX = min(minX, x);
-                    minY = min(minY, y);
-                    maxX = max(maxX, x + width);
-                    maxY = max(maxY, y + height);
-                    validCoordinates = true;
-                }
+        calculateAreaFromModules();
+    }
+}
+
+/**
+ * Calculate area directly from module positions as a fallback
+ */
+void PlacementSolver::calculateAreaFromModules() {
+    int minX = numeric_limits<int>::max();
+    int minY = numeric_limits<int>::max();
+    int maxX = 0;
+    int maxY = 0;
+    
+    bool validCoordinates = false;
+    
+    // Calculate bounding box from module positions
+    for (const auto& pair : modules) {
+        const auto& module = pair.second;
+        if (module) {
+            int x = module->getX();
+            int y = module->getY();
+            int width = module->getWidth();
+            int height = module->getHeight();
+            
+            if (x >= 0 && y >= 0) {  // Only consider valid coordinates
+                minX = min(minX, x);
+                minY = min(minY, y);
+                maxX = max(maxX, x + width);
+                maxY = max(maxY, y + height);
+                validCoordinates = true;
             }
         }
-        
-        if (validCoordinates) {
-            totalArea = (maxX - minX) * (maxY - minY);
-            cout << "Estimated area from module positions: " << totalArea << endl;
-        } else if (currentArea > 0) {
-            // If all else fails but we had a valid area before, use that
-            totalArea = currentArea;
-            cout << "Using pre-exception area: " << totalArea << endl;
-        } else {
-            // Last resort fallback
+    }
+    
+    if (validCoordinates) {
+        totalArea = (maxX - minX) * (maxY - minY);
+        cout << "Estimated area from module positions: " << totalArea << endl;
+    } else {
+        // If all else fails, use the last known area if it's reasonable
+        if (totalArea > 0) {
             cout << "Using last known area: " << totalArea << endl;
+        } else {
+            cerr << "Unable to determine a valid area" << endl;
+            totalArea = 0;
         }
+    }
+}
+
+/**
+ * Validates and fixes the final placement if necessary
+ */
+void PlacementSolver::validateFinalPlacement() {
+    // Check for overlapping modules and try to fix them if found
+    bool hasOverlap = false;
+    
+    for (auto it1 = modules.begin(); it1 != modules.end(); ++it1) {
+        const auto& module1 = it1->second;
+        if (!module1) continue;
+        
+        for (auto it2 = next(it1); it2 != modules.end(); ++it2) {
+            const auto& module2 = it2->second;
+            if (!module2) continue;
+            
+            // Check for overlap
+            if (module1->getX() < module2->getX() + module2->getWidth() &&
+                module1->getX() + module1->getWidth() > module2->getX() &&
+                module1->getY() < module2->getY() + module2->getHeight() &&
+                module1->getY() + module1->getHeight() > module2->getY()) {
+                
+                cerr << "Overlap detected in final placement between " << it1->first 
+                     << " and " << it2->first << endl;
+                hasOverlap = true;
+                
+                // Emergency fix: move the second module below the first one
+                module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+                cerr << "Emergency fix: moved " << it2->first << " below " << it1->first << endl;
+            }
+        }
+    }
+    
+    if (hasOverlap) {
+        cerr << "Fixed overlaps in final placement - recalculating area" << endl;
+        calculateAreaFromModules();
     }
 }
