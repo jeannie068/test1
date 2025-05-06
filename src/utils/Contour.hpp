@@ -1,3 +1,12 @@
+/**
+ * Contour.hpp
+ * 
+ * Implementation of the Contour class for efficient packing in the ASF-B*-tree
+ * placement algorithm. The contour data structure represents the skyline profile
+ * of the currently placed modules, allowing for efficient height queries and updates.
+ * Optimized implementation using doubly-linked list.
+ */
+
 #pragma once
 
 #include <vector>
@@ -24,44 +33,58 @@ struct ContourSegment {
 };
 
 /**
- * Optimized Contour class using sorted vector of segments
- * with binary search for faster queries instead of map-based lookup
+ * Node in the doubly-linked list representing a contour segment
+ */
+struct ContourNode {
+    int start;   // Start coordinate
+    int end;     // End coordinate
+    int height;  // Height
+    
+    ContourNode* prev;  // Pointer to previous node
+    ContourNode* next;  // Pointer to next node
+    
+    ContourNode(int s, int e, int h) : start(s), end(e), height(h), prev(nullptr), next(nullptr) {}
+};
+
+/**
+ * Optimized Contour class using a doubly-linked list
+ * for faster segment insertion and merging
  */
 class Contour {
 private:
-    // Using a sorted vector of segments for better cache locality
-    std::vector<ContourSegment> segments;
+    ContourNode* head;  // Head of the doubly-linked list
+    ContourNode* tail;  // Tail of the doubly-linked list
     
     // Maintain max coordinates and heights for quick access
     int maxCoordinate;
     int maxHeight;
     
-    // Binary search to find segment containing a point
-    int findSegmentIndex(int coordinate) const;
+    // Find the node containing a coordinate
+    ContourNode* findNode(int coordinate) const;
     
-    // Merge overlapping segments with same height
-    void mergeSegments();
+    // Merge adjacent nodes with the same height
+    void mergeNodes();
     
 public:
     Contour();
-    Contour(const Contour& other);
+    Contour(const Contour& other);  // Copy constructor
     ~Contour();
     void clear();
     
     /**
-     * Adds a segment to the contour - O(log n) with binary search
+     * Adds a segment to the contour
      */
     void addSegment(int start, int end, int height);
     
     /**
-     * Gets the height of the contour at a specific range - O(log n)
+     * Gets the height of the contour at a specific range
      */
     int getHeight(int start, int end) const;
     
     /**
      * Gets all contour segments
      */
-    const std::vector<ContourSegment>& getSegments() const;
+    std::vector<ContourSegment> getSegments() const;
     
     /**
      * Merges this contour with another contour

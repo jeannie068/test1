@@ -3,8 +3,8 @@
  * 
  * Implementation of the Contour class for efficient packing in the ASF-B*-tree
  * placement algorithm. The contour data structure represents the skyline profile
- * of the currently placed modules, allowing for O(log n) height queries and updates.
- * Optimized implementation using sorted vector and binary search
+ * of the currently placed modules, allowing for efficient height queries and updates.
+ * Optimized implementation using doubly-linked list.
  */
 
 #include "Contour.hpp"
@@ -14,180 +14,216 @@
 /**
  * Constructor
  */
-Contour::Contour() : maxCoordinate(0), maxHeight(0) {
+Contour::Contour() : head(nullptr), tail(nullptr), maxCoordinate(0), maxHeight(0) {
     // Initialize with empty contour
 }
 
 /**
  * Copy constructor
  */
-Contour::Contour(const Contour& other) 
-    : segments(other.segments),
-      maxCoordinate(other.maxCoordinate),
-      maxHeight(other.maxHeight) {
+Contour::Contour(const Contour& other) : head(nullptr), tail(nullptr), maxCoordinate(other.maxCoordinate), maxHeight(other.maxHeight) {
+    // Deep copy of the linked list
+    ContourNode* current = other.head;
+    while (current) {
+        addSegment(current->start, current->end, current->height);
+        current = current->next;
+    }
 }
 
 /**
  * Destructor
  */
 Contour::~Contour() {
-    // No manual cleanup needed
+    clear();
 }
 
 /**
  * Clears the contour
  */
 void Contour::clear() {
-    segments.clear();
+    // Delete all nodes in the linked list
+    ContourNode* current = head;
+    while (current) {
+        ContourNode* next = current->next;
+        delete current;
+        current = next;
+    }
+    head = nullptr;
+    tail = nullptr;
     maxCoordinate = 0;
     maxHeight = 0;
 }
 
 /**
- * Binary search to find segment containing a coordinate
- * Returns the index of the segment, or -1 if not found
+ * Finds the node containing a coordinate
  */
-int Contour::findSegmentIndex(int coordinate) const {
-    if (segments.empty()) return -1;
-    
-    // Binary search optimized for faster lookup using upper_bound
-    auto it = std::upper_bound(segments.begin(), segments.end(), coordinate,
-                              [](int coord, const ContourSegment& seg) {
-                                  return coord < seg.start;
-                              });
-    
-    // If we're at the beginning, there's no segment containing coordinate
-    if (it == segments.begin()) return -1;
-    
-    // Check the previous segment
-    --it;
-    if (it->start <= coordinate && coordinate < it->end) {
-        return std::distance(segments.begin(), it);
+ContourNode* Contour::findNode(int coordinate) const {
+    ContourNode* current = head;
+    while (current) {
+        if (current->start <= coordinate && coordinate < current->end) {
+            return current;
+        }
+        current = current->next;
     }
-    
-    return -1;
+    return nullptr;
 }
 
 /**
- * Merge overlapping segments with the same height
+ * Merges adjacent nodes with the same height
  */
-void Contour::mergeSegments() {
-    if (segments.size() <= 1) return;
+void Contour::mergeNodes() {
+    if (!head) return;
     
-    std::vector<ContourSegment> mergedSegments;
-    mergedSegments.reserve(segments.size());
-    
-    // Add the first segment
-    mergedSegments.push_back(segments[0]);
-    
-    // Try to merge each subsequent segment
-    for (size_t i = 1; i < segments.size(); ++i) {
-        ContourSegment& last = mergedSegments.back();
-        const ContourSegment& current = segments[i];
-        
-        // If the current segment can be merged with the last one
-        if (last.end == current.start && last.height == current.height) {
-            last.end = current.end;
-        } else {
-            mergedSegments.push_back(current);
+    ContourNode* current = head;
+    while (current && current->next) {
+        // If the current node's end equals the next node's start and they have the same height
+        if (current->end == current->next->start && current->height == current->next->height) {
+            // Extend the current node's end to the next node's end
+            current->end = current->next->end;
+            
+            // Remove the next node
+            ContourNode* nextNode = current->next;
+            current->next = nextNode->next;
+            
+            if (nextNode->next) nextNode->next->prev = current;
+            else tail = current;
+            
+            delete nextNode;
+            
+            // Continue checking for more merges without advancing current
+            continue;
         }
+        
+        current = current->next;
     }
-    
-    // Replace segments with merged segments
-    segments = std::move(mergedSegments);
 }
 
 /**
  * Adds a segment to the contour
- * Optimized for O(log n) insertion time
  */
 void Contour::addSegment(int start, int end, int height) {
     if (start >= end) return;  // Invalid segment
     
-    // Update max values
+    // Update maximum values
     maxCoordinate = std::max(maxCoordinate, end);
     maxHeight = std::max(maxHeight, height);
     
     // Special case: empty contour
-    if (segments.empty()) {
-        segments.emplace_back(start, end, height);
+    if (!head) {
+        head = new ContourNode(start, end, height);
+        tail = head;
         return;
     }
     
-    // Find the first segment that starts after or at the new segment's start
-    auto startIt = std::lower_bound(segments.begin(), segments.end(), 
-                                  ContourSegment(start, start, 0),
-                                  [](const ContourSegment& a, const ContourSegment& b) {
-                                      return a.start < b.start;
-                                  });
+    // Find the insertion point and handle overlapping segments
     
-    // Find the first segment that starts after the new segment's end
-    auto endIt = std::lower_bound(segments.begin(), segments.end(), 
-                                ContourSegment(end, end, 0),
-                                [](const ContourSegment& a, const ContourSegment& b) {
-                                    return a.start < b.start;
-                                });
+    // Find the first node that overlaps with the new segment
+    ContourNode* current = head;
     
-    // If there's a segment that ends at start with the same height, extend it
-    if (startIt != segments.begin()) {
-        auto prevIt = startIt - 1;
-        if (prevIt->end == start && prevIt->height == height) {
-            start = prevIt->start;  // Extend the segment
-            startIt = prevIt;       // Start from this segment
+    // Skip nodes that end before the new segment starts
+    while (current && current->end <= start) {
+        current = current->next;
+    }
+    
+    // No overlap - insert at the end or between nodes
+    if (!current) {
+        // Check if we can extend the tail
+        if (tail && tail->end == start && tail->height == height) {
+            tail->end = end;
+        } else {
+            // Insert a new node at the end
+            ContourNode* newNode = new ContourNode(start, end, height);
+            newNode->prev = tail;
+            if (tail) tail->next = newNode;
+            else head = newNode;
+            tail = newNode;
+        }
+        return;
+    }
+    
+    // If the new segment starts before the current node
+    if (start < current->start) {
+        // Check if we can extend the previous node
+        if (current->prev && current->prev->end == start && current->prev->height == height) {
+            // Extend previous node up to the current node
+            current->prev->end = std::min(end, current->start);
+            
+            // If the new segment extends beyond the current node's start, continue processing
+            if (end > current->start) {
+                start = current->start;
+            } else {
+                return;  // Done
+            }
+        } else {
+            // Insert a new node before the current one
+            ContourNode* newNode = new ContourNode(start, std::min(end, current->start), height);
+            newNode->next = current;
+            newNode->prev = current->prev;
+            if (current->prev) current->prev->next = newNode;
+            else head = newNode;
+            current->prev = newNode;
+            
+            // If the new segment ends before the current node starts, we're done
+            if (end <= current->start) {
+                return;
+            }
+            
+            // Otherwise, continue processing from the current node's start
+            start = current->start;
         }
     }
     
-    // If there's a segment that starts at end with the same height, extend it
-    if (endIt != segments.end() && endIt->start == end && endIt->height == height) {
-        end = endIt->end;  // Extend the segment
-        ++endIt;          // Include this segment in the range to remove
+    // Process overlapping nodes
+    while (current && start < end) {
+        // If the new segment completely covers the current node
+        if (end >= current->end) {
+            current->height = height;  // Update height
+            start = current->end;      // Move start to the end of this node
+            current = current->next;   // Move to next node
+        } else {
+            // The new segment ends within the current node - split the node
+            ContourNode* newNode = new ContourNode(end, current->end, current->height);
+            newNode->next = current->next;
+            if (current->next) current->next->prev = newNode;
+            else tail = newNode;
+            
+            current->next = newNode;
+            newNode->prev = current;
+            
+            current->end = end;
+            current->height = height;
+            
+            break;  // Done
+        }
     }
     
-    // Create a new segment with the extended range
-    ContourSegment newSegment(start, end, height);
-    
-    // Replace the range of segments that overlap with the new segment
-    // with the new segment itself
-    segments.erase(startIt, endIt);
-    segments.insert(startIt, newSegment);
-    
-    // No need to sort or merge - the segments are already in order and merged
+    // Merge adjacent nodes with the same height
+    mergeNodes();
 }
 
 /**
  * Gets the height of the contour at a specific range
- * Optimized for O(log n) query time
  */
 int Contour::getHeight(int start, int end) const {
     if (start >= end) return 0;
-    if (segments.empty()) return 0;
+    if (!head) return 0;
     
-    // Find the first segment that might contain start
-    auto it = std::lower_bound(segments.begin(), segments.end(),
-                              ContourSegment(start, start, 0),
-                              [](const ContourSegment& a, const ContourSegment& b) {
-                                  return a.start < b.start;
-                              });
-    
-    // If we found a segment that starts after start, check the previous segment
-    if (it != segments.begin() && (it == segments.end() || it->start > start)) {
-        --it;
-        if (it->end <= start) {
-            // This segment ends before start, move to the next one
-            ++it;
-        }
-    }
-    
-    // Find maximum height in the range
+    // Find the maximum height in the range
     int maxHeight = 0;
     
-    // Iterate through segments that intersect the given range
-    while (it != segments.end() && it->start < end) {
-        // Only consider the segment if it actually overlaps the range
-        if (it->end > start) {
-            maxHeight = std::max(maxHeight, it->height);
+    // Find the first node that might contain or come after start
+    ContourNode* current = head;
+    while (current && current->end <= start) {
+        current = current->next;
+    }
+    
+    // Iterate through nodes that intersect with the given range
+    while (current && current->start < end) {
+        // Only consider the node if it actually overlaps the range
+        if (current->end > start) {
+            maxHeight = std::max(maxHeight, current->height);
         }
-        ++it;
+        current = current->next;
     }
     
     return maxHeight;
@@ -196,7 +232,15 @@ int Contour::getHeight(int start, int end) const {
 /**
  * Gets all contour segments
  */
-const std::vector<ContourSegment>& Contour::getSegments() const {
+std::vector<ContourSegment> Contour::getSegments() const {
+    std::vector<ContourSegment> segments;
+    
+    ContourNode* current = head;
+    while (current) {
+        segments.push_back(ContourSegment(current->start, current->end, current->height));
+        current = current->next;
+    }
+    
     return segments;
 }
 
@@ -205,55 +249,24 @@ const std::vector<ContourSegment>& Contour::getSegments() const {
  */
 void Contour::merge(const Contour& other) {
     // If other contour is empty, nothing to do
-    if (other.segments.empty()) return;
+    if (!other.head) return;
     
     // If this contour is empty, just copy the other one
-    if (segments.empty()) {
-        segments = other.segments;
-        maxCoordinate = other.maxCoordinate;
-        maxHeight = other.maxHeight;
+    if (!head) {
+        *this = other;
         return;
     }
     
-    // Preallocate vector for all combined segments
-    std::vector<ContourSegment> result;
-    result.reserve(segments.size() + other.segments.size());
-    
-    // Merge the two sorted segment lists
-    auto it1 = segments.begin();
-    auto it2 = other.segments.begin();
-    
-    while (it1 != segments.end() && it2 != other.segments.end()) {
-        // Choose the segment with earlier start
-        if (it1->start < it2->start) {
-            result.push_back(*it1);
-            ++it1;
-        } else {
-            result.push_back(*it2);
-            ++it2;
-        }
+    // Merge the two contours by adding each segment from the other contour
+    ContourNode* current = other.head;
+    while (current) {
+        addSegment(current->start, current->end, current->height);
+        current = current->next;
     }
     
-    // Add remaining segments
-    while (it1 != segments.end()) {
-        result.push_back(*it1);
-        ++it1;
-    }
-    
-    while (it2 != other.segments.end()) {
-        result.push_back(*it2);
-        ++it2;
-    }
-    
-    // Replace segments with the merged list
-    segments = std::move(result);
-    
-    // Update max values
+    // Update maximum values
     maxCoordinate = std::max(maxCoordinate, other.maxCoordinate);
     maxHeight = std::max(maxHeight, other.maxHeight);
-    
-    // Merge overlapping segments with the same height
-    mergeSegments();
 }
 
 /**
@@ -274,5 +287,5 @@ int Contour::getMaxHeight() const {
  * Checks if the contour is empty
  */
 bool Contour::isEmpty() const {
-    return segments.empty();
+    return head == nullptr;
 }
