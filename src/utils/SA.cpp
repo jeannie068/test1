@@ -114,6 +114,7 @@ int SimulatedAnnealing::calculateCost(const shared_ptr<HBStarTree>& solution) co
 /**
  * Performs a random perturbation on the current solution
  */
+// In SimulatedAnnealing::perturb() - improve chances of perturbation success
 bool SimulatedAnnealing::perturb() {
     // Check for timeout
     if (checkTimeout()) {
@@ -123,37 +124,46 @@ bool SimulatedAnnealing::perturb() {
     // Choose perturbation type based on adaptive probabilities
     double randVal = uniformDist(rng);
     bool result = false;
+    int maxAttempts = 5;  // Try multiple times to get a successful perturbation
     
-    if (randVal < adaptivePerturbation.getRotateProbability()) {
-        lastOperation = "rotate";
-        adaptivePerturbation.recordAttempt(lastOperation);
-        result = perturbRotate();
-    } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                        adaptivePerturbation.getMoveProbability()) {
-        lastOperation = "move";
-        adaptivePerturbation.recordAttempt(lastOperation);
-        result = perturbMove();
-    } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                        adaptivePerturbation.getMoveProbability() + 
-                        adaptivePerturbation.getSwapProbability()) {
-        lastOperation = "swap";
-        adaptivePerturbation.recordAttempt(lastOperation);
-        result = perturbSwap();
-    } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                        adaptivePerturbation.getMoveProbability() + 
-                        adaptivePerturbation.getSwapProbability() + 
-                        adaptivePerturbation.getChangeRepProbability()) {
-        lastOperation = "changeRep";
-        adaptivePerturbation.recordAttempt(lastOperation);
-        result = perturbChangeRepresentative();
-    } else {
-        lastOperation = "convertSym";
-        adaptivePerturbation.recordAttempt(lastOperation);
-        result = perturbConvertSymmetryType();
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+        if (randVal < adaptivePerturbation.getRotateProbability()) {
+            lastOperation = "rotate";
+            adaptivePerturbation.recordAttempt(lastOperation);
+            result = perturbRotate();
+        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
+                          adaptivePerturbation.getMoveProbability()) {
+            lastOperation = "move";
+            adaptivePerturbation.recordAttempt(lastOperation);
+            result = perturbMove();
+        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
+                          adaptivePerturbation.getMoveProbability() + 
+                          adaptivePerturbation.getSwapProbability()) {
+            lastOperation = "swap";
+            adaptivePerturbation.recordAttempt(lastOperation);
+            result = perturbSwap();
+        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
+                          adaptivePerturbation.getMoveProbability() + 
+                          adaptivePerturbation.getSwapProbability() + 
+                          adaptivePerturbation.getChangeRepProbability()) {
+            lastOperation = "changeRep";
+            adaptivePerturbation.recordAttempt(lastOperation);
+            result = perturbChangeRepresentative();
+        } else {
+            lastOperation = "convertSym";
+            adaptivePerturbation.recordAttempt(lastOperation);
+            result = perturbConvertSymmetryType();
+        }
+        
+        if (result) break;  // If perturbation succeeded, stop trying
+        
+        // Try a different operation type for the next attempt
+        randVal = uniformDist(rng);
     }
     
     return result;
 }
+
 
 /**
  * Rotates a random module
@@ -299,7 +309,8 @@ bool SimulatedAnnealing::acceptMove(int costDifference, double temperature) cons
     }
     
     // For moves that worsen the solution, accept with a probability based on temperature
-    double probability = exp(-costDifference / temperature);
+    // Use a more gentle probability curve to accept more moves at higher temperatures
+    double probability = exp(-costDifference / (temperature * 2));  // Multiply temperature by 2 to increase acceptance
     return uniformDist(rng) < probability;
 }
 

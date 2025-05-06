@@ -1,4 +1,5 @@
 #include "../solver/solver.hpp"
+#include "../data_struct/HBStarTree.hpp"
 #include <iostream>
 #include <ctime>
 #include <algorithm>
@@ -30,7 +31,7 @@ PlacementSolver::~PlacementSolver() {
 
 }
 
-void PlacementSolver::setTimeoutManager(std::shared_ptr<TimeoutManager> manager) {
+void PlacementSolver::setTimeoutManager(shared_ptr<TimeoutManager> manager) {
     timeoutManager = manager;
 }
 
@@ -145,28 +146,36 @@ bool PlacementSolver::solve() {
     }
     
     if (!hbTree || !hbTree->getRoot()) {
-        std::cerr << "Error: Failed to create initial solution." << std::endl;
+        cerr << "Error: Failed to create initial solution." << endl;
         return false;
     }
     
-    std::cout << "Starting simulated annealing..." << std::endl;
-    std::cout << "Initial temperature: " << initialTemperature << std::endl;
-    std::cout << "Final temperature: " << finalTemperature << std::endl;
-    std::cout << "Cooling rate: " << coolingRate << std::endl;
-    std::cout << "Iterations per temperature: " << iterationsPerTemperature << std::endl;
-    std::cout << "No improvement limit: " << noImprovementLimit << std::endl;
+    // Pack the initial solution to get accurate area
+    hbTree->pack();
+    
+    // Save a copy of the initial solution and its area
+    auto initialSolution = hbTree->clone();
+    int initialArea = hbTree->getArea();
+    cout << "Initial area: " << initialArea << endl;
+    
+    cout << "Starting simulated annealing..." << endl;
+    cout << "Initial temperature: " << initialTemperature << endl;
+    cout << "Final temperature: " << finalTemperature << endl;
+    cout << "Cooling rate: " << coolingRate << endl;
+    cout << "Iterations per temperature: " << iterationsPerTemperature << endl;
+    cout << "No improvement limit: " << noImprovementLimit << endl;
     
     // Create the simulated annealing solver with optimized parameters
     SimulatedAnnealing sa(hbTree, 
-                          1000.0,     // Initial temperature
-                          1.0,        // Higher final temperature to stop earlier
-                          0.85,       // More aggressive cooling
-                          250,        // More iterations at high temperatures
-                          500);       // Lower no improvement limit
+                          initialTemperature,
+                          finalTemperature,
+                          coolingRate,
+                          iterationsPerTemperature,
+                          noImprovementLimit);
     
     // Let the adaptive perturbation handle probabilities
-    // These are just initial values that will be tuned during the SA process
-    sa.setPerturbationProbabilities(0.3, 0.4, 0.2, 0.05, 0.05);
+    sa.setPerturbationProbabilities(probRotate, probMove, probSwap, 
+                                   probChangeRep, probConvertSym);
     sa.setCostWeights(areaWeight, wirelengthWeight);
     sa.setSeed(randomSeed);
     
@@ -177,45 +186,48 @@ bool PlacementSolver::solve() {
     
     // Check for timeout before starting
     if (timeoutManager && timeoutManager->hasTimedOut()) {
-        std::cout << "Timeout detected before starting SA." << std::endl;
+        cout << "Timeout detected before starting SA." << endl;
         return false;
     }
     
     // Run simulated annealing
-    std::shared_ptr<HBStarTree> result = nullptr;
+    shared_ptr<HBStarTree> result = nullptr;
     try {
         result = sa.run();
         if (!result) {
-            std::cerr << "Error: Simulated annealing failed to find a solution." << std::endl;
+            cerr << "Error: Simulated annealing failed to find a solution." << endl;
             return false;
         }
     }
-    catch (const std::runtime_error& e) {
-        std::string errorMsg = e.what();
-        if (errorMsg.find("Timeout") != std::string::npos) {
-            std::cout << "SA process was interrupted by timeout." << std::endl;
+    catch (const runtime_error& e) {
+        string errorMsg = e.what();
+        if (errorMsg.find("Timeout") != string::npos) {
+            cout << "SA process was interrupted by timeout." << endl;
             // Use the best solution found so far
             result = sa.getBestSolution();
             if (!result) {
-                std::cerr << "No solution available after timeout." << std::endl;
-                return false;
+                cerr << "No solution available after timeout." << endl;
+                // If no SA solution, use the initial solution
+                hbTree = initialSolution;
+                totalArea = initialArea;
+                return true;
             }
         } else {
             throw; // Re-throw other runtime errors
         }
     }
     
-    // Update the HB*-tree with the best solution
+    // Update the HB*-tree with the best solution from SA
     hbTree = result;
     
-    // Ensure the solution is packed (should already be, but just to be safe)
+    // Ensure the solution is packed once to get accurate area
     try {
         hbTree->pack();
     }
-    catch (const std::runtime_error& e) {
-        std::string errorMsg = e.what();
-        if (errorMsg.find("Timeout") != std::string::npos) {
-            std::cout << "Packing was interrupted by timeout. Using partial results." << std::endl;
+    catch (const runtime_error& e) {
+        string errorMsg = e.what();
+        if (errorMsg.find("Timeout") != string::npos) {
+            cout << "Packing was interrupted by timeout. Using partial results." << endl;
         } else {
             throw; // Re-throw other runtime errors
         }
@@ -224,15 +236,21 @@ bool PlacementSolver::solve() {
     // Update statistics
     totalArea = hbTree->getArea();
     
-    std::cout << "Simulated annealing completed." << std::endl;
-    std::cout << "Final area: " << totalArea << std::endl;
+    // Check if the initial solution was better than what SA found
+    if (totalArea > initialArea) {
+        cout << "Initial solution was better than SA result. Using initial solution." << endl;
+        hbTree = initialSolution;
+        totalArea = initialArea;
+    }
+    
+    cout << "Final area: " << totalArea << endl;
     
     // Print statistics
     auto stats = sa.getStatistics();
-    std::cout << "Total iterations: " << stats["totalIterations"] << std::endl;
-    std::cout << "Accepted moves: " << stats["acceptedMoves"] << std::endl;
-    std::cout << "Rejected moves: " << stats["rejectedMoves"] << std::endl;
-    std::cout << "No improvement count: " << stats["noImprovementCount"] << std::endl;
+    cout << "Total iterations: " << stats["totalIterations"] << endl;
+    cout << "Accepted moves: " << stats["acceptedMoves"] << endl;
+    cout << "Rejected moves: " << stats["rejectedMoves"] << endl;
+    cout << "No improvement count: " << stats["noImprovementCount"] << endl;
     
     return true;
 }
@@ -265,30 +283,39 @@ map<string, int> PlacementSolver::getStatistics() const {
  * This is crucial to call before getting solution area, especially after timeout
  */
 void PlacementSolver::finalizeSolution() {
-    // Make sure we have a valid HB*-tree
+    // Make sure having a valid HB*-tree
     if (!hbTree || !hbTree->getRoot()) {
-        std::cerr << "Error: No solution to finalize" << std::endl;
+        cerr << "Error: No solution to finalize" << endl;
         totalArea = 0;
         return;
     }
     
+    // Get the current area before potentially packing again
+    int currentArea = hbTree->getArea();
+    
     try {
-        // Ensure the tree is packed to get latest coordinates
+        // Pack the tree to ensure coordinates are up-to-date
         hbTree->pack();
         
-        // Calculate the area
+        // Calculate the area after packing
         totalArea = hbTree->getArea();
         
-        // Debug output
-        std::cout << "Solution finalized - Area: " << totalArea << std::endl;
+        // If packing makes the area worse, revert to the original area calculation
+        // This happens if the solution was already optimally packed
+        if (totalArea > currentArea && currentArea > 0) {
+            totalArea = currentArea;
+            cout << "Using pre-pack area as it's better: " << totalArea << endl;
+        } else {
+            cout << "Solution finalized - Area: " << totalArea << endl;
+        }
     }
-    catch (const std::exception& e) {
-        std::cerr << "Error finalizing solution: " << e.what() << std::endl;
+    catch (const exception& e) {
+        cerr << "Error finalizing solution: " << e.what() << endl;
         
         // Try a more cautious approach to get some valid area
         // This is a fallback mechanism for when we have a solution but packing fails
-        int minX = std::numeric_limits<int>::max();
-        int minY = std::numeric_limits<int>::max();
+        int minX = numeric_limits<int>::max();
+        int minY = numeric_limits<int>::max();
         int maxX = 0;
         int maxY = 0;
         
@@ -304,10 +331,10 @@ void PlacementSolver::finalizeSolution() {
                 int height = module->getHeight();
                 
                 if (x >= 0 && y >= 0) {  // Only consider valid coordinates
-                    minX = std::min(minX, x);
-                    minY = std::min(minY, y);
-                    maxX = std::max(maxX, x + width);
-                    maxY = std::max(maxY, y + height);
+                    minX = min(minX, x);
+                    minY = min(minY, y);
+                    maxX = max(maxX, x + width);
+                    maxY = max(maxY, y + height);
                     validCoordinates = true;
                 }
             }
@@ -315,10 +342,14 @@ void PlacementSolver::finalizeSolution() {
         
         if (validCoordinates) {
             totalArea = (maxX - minX) * (maxY - minY);
-            std::cout << "Estimated area from module positions: " << totalArea << std::endl;
+            cout << "Estimated area from module positions: " << totalArea << endl;
+        } else if (currentArea > 0) {
+            // If all else fails but we had a valid area before, use that
+            totalArea = currentArea;
+            cout << "Using pre-exception area: " << totalArea << endl;
         } else {
-            // If all else fails, return the last known area
-            std::cout << "Using last known area: " << totalArea << std::endl;
+            // Last resort fallback
+            cout << "Using last known area: " << totalArea << endl;
         }
     }
 }

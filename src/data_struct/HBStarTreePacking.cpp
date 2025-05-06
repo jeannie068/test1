@@ -348,48 +348,7 @@ void HBStarTree::repackAffectedSubtrees() {
     // Initialize vertical contour with a segment at x=0
     verticalContour->addSegment(0, std::numeric_limits<int>::max(), 0);
     
-    // Use a map to efficiently track nodes by their height in the tree
-    unordered_map<shared_ptr<HBStarTreeNode>, int> nodeDepths;
-    vector<shared_ptr<HBStarTreeNode>> rootsToRepack;
-    
-    // Calculate depths and find roots in one pass
-    for (const auto& node : modifiedSubtrees) {
-        // Skip if already processed
-        if (nodeDepths.find(node) != nodeDepths.end()) continue;
-        
-        // Calculate depth and check if it's a root
-        int depth = 0;
-        bool isRoot = true;
-        auto parent = node->getParent();
-        auto current = parent;
-        
-        while (current) {
-            depth++;
-            // If any ancestor is also modified, this is not a root
-            if (modifiedSubtrees.find(current) != modifiedSubtrees.end()) {
-                isRoot = false;
-                break;
-            }
-            current = current->getParent();
-        }
-        
-        nodeDepths[node] = depth;
-        
-        if (isRoot) {
-            rootsToRepack.push_back(node);
-        }
-    }
-    
-    // Sort by depth (deeper nodes first)
-    sort(rootsToRepack.begin(), rootsToRepack.end(), 
-         [&nodeDepths](const shared_ptr<HBStarTreeNode>& a, const shared_ptr<HBStarTreeNode>& b) {
-             return nodeDepths[a] > nodeDepths[b];
-         });
-    
-    // Now we need to consider the placement order more carefully
-    // Pack the tree in a bottom-up manner
-    
-    // First, check if the root node itself is modified
+    // If root is modified, we can directly pack the entire tree
     bool rootModified = false;
     for (const auto& node : modifiedSubtrees) {
         if (node == root) {
@@ -402,17 +361,40 @@ void HBStarTree::repackAffectedSubtrees() {
         // If root is modified, pack the entire tree
         packSubtree(root);
     } else {
-        // Otherwise, pack only the modified subtrees
+        // Optimize: Only process nodes that need repacking
+        // Find the minimal set of nodes that need repacking
+        vector<shared_ptr<HBStarTreeNode>> rootsToRepack;
+        
+        for (const auto& node : modifiedSubtrees) {
+            // Skip if this node is already covered by another node in rootsToRepack
+            bool alreadyCovered = false;
+            for (const auto& root : rootsToRepack) {
+                auto current = node;
+                while (current && current != root) {
+                    current = current->getParent();
+                }
+                if (current == root) {
+                    alreadyCovered = true;
+                    break;
+                }
+            }
+            
+            if (!alreadyCovered) {
+                rootsToRepack.push_back(node);
+            }
+        }
+        
+        // Pack each root node
         for (const auto& node : rootsToRepack) {
-            // Make sure to update contours with any already placed nodes above this subtree
+            // Update contours with already placed nodes
             updateContourForSubtree(node);
             
-            // Now pack the subtree
+            // Pack the subtree
             packSubtree(node);
         }
     }
     
-    // Calculate total area
+    // Calculate total area - more efficiently by tracking min/max during packing
     int minX = std::numeric_limits<int>::max(), minY = std::numeric_limits<int>::max();
     int maxX = 0, maxY = 0;
     

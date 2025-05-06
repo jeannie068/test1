@@ -151,9 +151,13 @@ int HBStarTree::getWireLength() const {
 shared_ptr<HBStarTree> HBStarTree::clone() const {
     auto clone = make_shared<HBStarTree>();
     
-    // Copy modules
+    // Copy modules with exact same coordinates
     for (const auto& pair : modules) {
         auto moduleCopy = make_shared<Module>(*pair.second);
+        // Make sure to copy the exact same position
+        moduleCopy->setPosition(pair.second->getX(), pair.second->getY());
+        // Make sure to copy the exact same rotation
+        moduleCopy->setRotation(pair.second->getRotated());
         clone->modules[pair.first] = moduleCopy;
     }
     
@@ -164,8 +168,30 @@ shared_ptr<HBStarTree> HBStarTree::clone() const {
         clone->symmetryGroups.push_back(groupCopy);
     }
     
-    // Reconstruct initial tree
-    clone->constructInitialTree();
+    // Deep copy of tree structure
+    if (root) {
+        clone->root = root->clone();
+        
+        // Rebuild the lookup maps
+        clone->registerNodeInMap(clone->root);
+    }
+    
+    // Copy module and symmetry group nodes maps
+    for (const auto& pair : moduleNodes) {
+        const string& name = pair.first;
+        auto node = clone->findNode(name);
+        if (node) {
+            clone->moduleNodes[name] = node;
+        }
+    }
+    
+    for (const auto& pair : symmetryGroupNodes) {
+        const string& name = pair.first;
+        auto node = clone->findNode(name);
+        if (node) {
+            clone->symmetryGroupNodes[name] = node;
+        }
+    }
     
     // Copy packed state
     clone->isPacked = isPacked;
