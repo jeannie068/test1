@@ -21,17 +21,21 @@ using namespace std;
 
 class ASFBStarTree {
 private:
-    // Core tree structure
+    // Core tree structure - holds ONLY representatives
     shared_ptr<BStarTreeNode> root;
     
     // Module and symmetry information
-    map<string, shared_ptr<Module>> modules;
+    map<string, shared_ptr<Module>> modules; // All modules (representatives + mirrored)
     shared_ptr<SymmetryGroup> symmetryGroup;
     
     // Track representatives for symmetry pairs and self-symmetric modules
     map<string, string> representativeMap;  // Maps module to its representative
     map<string, string> symmetricPairMap;   // Maps a module to its symmetric pair
     vector<string> selfSymmetricModules;    // List of self-symmetric modules
+    set<string> representativeModules;      // Set of representatives
+    
+    // NEW: Track non-representatives
+    set<string> nonRepresentativeModules;   // Modules that are mirrored
     
     // NEW: Efficient node lookup
     unordered_map<string, shared_ptr<BStarTreeNode>> nodeMap;
@@ -41,21 +45,23 @@ private:
     shared_ptr<Contour> horizontalContour;
     shared_ptr<Contour> verticalContour;
     
-    // Symmetry axis position
+    // Symmetry axis position - LOCKED at initialization
     double symmetryAxisPosition;
+    bool axisPositionLocked;
     
     // Internal helper methods
     bool isOnBoundary(const string& moduleName) const;
     bool canMoveNode(const shared_ptr<BStarTreeNode>& node, 
                      const shared_ptr<BStarTreeNode>& newParent, 
                      bool asLeftChild) const;
-    void updateRepresentatives();
     
     // Packing helpers
     void initializeContours();
     void updateContourWithModule(const shared_ptr<Module>& module);
     void packNode(const shared_ptr<BStarTreeNode>& node);
-    void calculateSymmetricModulePositions();
+    void mirrorNonRepresentativeModules();
+    void lockSymmetryAxis();
+    void calculateSelfSymmetricModulePositions();
     
     // NEW: Node lookup management
     void registerNodeInMap(shared_ptr<BStarTreeNode> node);

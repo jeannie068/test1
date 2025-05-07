@@ -52,23 +52,30 @@ void ASFBStarTree::packNode(const shared_ptr<BStarTreeNode>& node) {
     if (!node) return;
     
     const string& moduleName = node->getModuleName();
-    auto module = modules[moduleName];
+    auto it = modules.find(moduleName);
+    if (it == modules.end() || !it->second) {
+        cerr << "Error: Module " << moduleName << " not found in modules map" << endl;
+        return;
+    }
     
-    if (!module) return;
+    auto module = it->second;
     
     int x = 0, y = 0;
     
     // Calculate x-coordinate based on B*-tree rules
     if (node->getParent()) {
         auto parent = modules[node->getParent()->getModuleName()];
-        if (parent) {
-            if (node->getParent()->getLeftChild() == node) {
-                // Left child: place to the right of parent
-                x = parent->getX() + parent->getWidth();
-            } else {
-                // Right child: same x-coordinate as parent
-                x = parent->getX();
-            }
+        if (!parent) {
+            cerr << "Error: Parent module not found" << endl;
+            return;
+        }
+        
+        if (node->isLeftChild()) {
+            // Left child: place to the right of parent
+            x = parent->getX() + parent->getWidth();
+        } else {
+            // Right child: same x-coordinate as parent
+            x = parent->getX();
         }
     }
     
@@ -76,15 +83,16 @@ void ASFBStarTree::packNode(const shared_ptr<BStarTreeNode>& node) {
     y = horizontalContour->getHeight(x, x + module->getWidth());
     
     // Special handling for self-symmetric modules
-    if (find(selfSymmetricModules.begin(), selfSymmetricModules.end(), 
-                 moduleName) != selfSymmetricModules.end()) {
-        // Self-symmetric modules must be on the boundary
+    if (find(selfSymmetricModules.begin(), selfSymmetricModules.end(), moduleName) != selfSymmetricModules.end()) {
+        // For vertical symmetry, center on the axis
         if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
-            // For vertical symmetry, the module must abut the symmetry axis
-            x = static_cast<int>(symmetryAxisPosition) - module->getWidth() / 2;
-        } else {
-            // For horizontal symmetry, the module must be on the bottom
-            y = static_cast<int>(symmetryAxisPosition) - module->getHeight() / 2;
+            // Calculate the center position
+            x = static_cast<int>(symmetryAxisPosition - module->getWidth() / 2.0);
+        }
+        // For horizontal symmetry, center on the axis
+        else {
+            // Calculate the center position
+            y = static_cast<int>(symmetryAxisPosition - module->getHeight() / 2.0);
         }
     }
     
@@ -96,75 +104,155 @@ void ASFBStarTree::packNode(const shared_ptr<BStarTreeNode>& node) {
 }
 
 /**
- * Calculate the positions of symmetric modules
+ * Calculate positions for self-symmetric modules
  */
-void ASFBStarTree::calculateSymmetricModulePositions() {
-    // Process symmetry pairs
-    for (const auto& pair : symmetryGroup->getSymmetryPairs()) {
-        const string& module1 = pair.first;
-        const string& module2 = pair.second;
-        
-        auto mod1 = modules[module1];
-        auto mod2 = modules[module2];
-        
-        if (!mod1 || !mod2) continue;
-        
-        // Determine which module is the representative
-        string representative = getRepresentative(module1);
-        
-        if (representative == module1) {
-            // module1 is the representative, calculate position of module2
-            if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
-                // For vertical symmetry, reflect center about the symmetry axis
-                double center1_x = mod1->getX() + mod1->getWidth() / 2.0;
-                double reflectedCenter_x = 2 * symmetryAxisPosition - center1_x;
-                // Convert back to left edge
-                int reflectedX = static_cast<int>(reflectedCenter_x - mod2->getWidth() / 2.0);
-                mod2->setPosition(reflectedX, mod1->getY());
-            } else {
-                // For horizontal symmetry, reflect center about the symmetry axis
-                double center1_y = mod1->getY() + mod1->getHeight() / 2.0;
-                double reflectedCenter_y = 2 * symmetryAxisPosition - center1_y;
-                // Convert back to bottom edge
-                int reflectedY = static_cast<int>(reflectedCenter_y - mod2->getHeight() / 2.0);
-                mod2->setPosition(mod1->getX(), reflectedY);
-            }
-        } else if (representative == module2) {
-            // module2 is the representative, calculate position of module1
-            if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
-                // For vertical symmetry, reflect center about the symmetry axis
-                double center2_x = mod2->getX() + mod2->getWidth() / 2.0;
-                double reflectedCenter_x = 2 * symmetryAxisPosition - center2_x;
-                // Convert back to left edge
-                int reflectedX = static_cast<int>(reflectedCenter_x - mod1->getWidth() / 2.0);
-                mod1->setPosition(reflectedX, mod2->getY());
-            } else {
-                // For horizontal symmetry, reflect center about the symmetry axis
-                double center2_y = mod2->getY() + mod2->getHeight() / 2.0;
-                double reflectedCenter_y = 2 * symmetryAxisPosition - center2_y;
-                // Convert back to bottom edge
-                int reflectedY = static_cast<int>(reflectedCenter_y - mod1->getHeight() / 2.0);
-                mod1->setPosition(mod2->getX(), reflectedY);
-            }
-        }
-    }
-    
+void ASFBStarTree::calculateSelfSymmetricModulePositions() {
     // Process self-symmetric modules
     for (const auto& moduleName : selfSymmetricModules) {
-        auto module = modules[moduleName];
-        if (module) {
-            // For self-symmetric modules, make sure they are centered on the symmetry axis
-            if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
-                // Center the module on the vertical symmetry axis
-                int newX = static_cast<int>(symmetryAxisPosition - module->getWidth() / 2.0);
-                module->setPosition(newX, module->getY());
-            } else {
-                // Center the module on the horizontal symmetry axis
-                int newY = static_cast<int>(symmetryAxisPosition - module->getHeight() / 2.0);
-                module->setPosition(module->getX(), newY);
-            }
+        auto it = modules.find(moduleName);
+        if (it == modules.end() || !it->second) continue;
+        
+        auto module = it->second;
+        
+        // For self-symmetric modules, make sure they are centered on the symmetry axis
+        if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
+            // Center the module on the vertical symmetry axis
+            int newX = static_cast<int>(symmetryAxisPosition - module->getWidth() / 2.0);
+            module->setPosition(newX, module->getY());
+        } else {
+            // Center the module on the horizontal symmetry axis
+            int newY = static_cast<int>(symmetryAxisPosition - module->getHeight() / 2.0);
+            module->setPosition(module->getX(), newY);
         }
     }
+}
+
+/**
+ * Mirror non-representative modules based on the representatives' positions
+ */
+void ASFBStarTree::mirrorNonRepresentativeModules() {
+    if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
+        // For each symmetry pair, mirror the non-representative
+        for (const auto& pair : symmetryGroup->getSymmetryPairs()) {
+            // Find the representative module
+            string repName = getRepresentative(pair.first);
+            if (repName.empty()) continue;
+            
+            // Get the representative and non-representative modules
+            string nonRepName = (pair.first == repName) ? pair.second : pair.first;
+            
+            auto repIt = modules.find(repName);
+            auto nonRepIt = modules.find(nonRepName);
+            
+            if (repIt == modules.end() || nonRepIt == modules.end() || 
+                !repIt->second || !nonRepIt->second) {
+                continue;
+            }
+            
+            auto rep = repIt->second;
+            auto nonRep = nonRepIt->second;
+            
+            // Copy rotation status
+            nonRep->setRotation(rep->getRotated());
+            
+            // Mirror position around the symmetry axis
+            int repWidth = rep->getWidth();
+            int repX = rep->getX();
+            int repY = rep->getY();
+            
+            // Calculate the reflected x-coordinate
+            double repCenterX = repX + repWidth / 2.0;
+            double reflectedCenterX = 2 * symmetryAxisPosition - repCenterX;
+            
+            // Calculate new x-coordinate for non-representative
+            int nonRepX = static_cast<int>(reflectedCenterX - nonRep->getWidth() / 2.0);
+            
+            // Place the non-representative module
+            nonRep->setPosition(nonRepX, repY);
+        }
+    } else { // HORIZONTAL symmetry
+        for (const auto& pair : symmetryGroup->getSymmetryPairs()) {
+            // Find the representative module
+            string repName = getRepresentative(pair.first);
+            if (repName.empty()) continue;
+            
+            // Get the representative and non-representative modules
+            string nonRepName = (pair.first == repName) ? pair.second : pair.first;
+            
+            auto repIt = modules.find(repName);
+            auto nonRepIt = modules.find(nonRepName);
+            
+            if (repIt == modules.end() || nonRepIt == modules.end() || 
+                !repIt->second || !nonRepIt->second) {
+                continue;
+            }
+            
+            auto rep = repIt->second;
+            auto nonRep = nonRepIt->second;
+            
+            // Copy rotation status
+            nonRep->setRotation(rep->getRotated());
+            
+            // Mirror position around the horizontal symmetry axis
+            int repHeight = rep->getHeight();
+            int repX = rep->getX();
+            int repY = rep->getY();
+            
+            // Calculate the reflected y-coordinate
+            double repCenterY = repY + repHeight / 2.0;
+            double reflectedCenterY = 2 * symmetryAxisPosition - repCenterY;
+            
+            // Calculate new y-coordinate for non-representative
+            int nonRepY = static_cast<int>(reflectedCenterY - nonRep->getHeight() / 2.0);
+            
+            // Place the non-representative module
+            nonRep->setPosition(repX, nonRepY);
+        }
+    }
+}
+
+/**
+ * Repack only the modified nodes and their subtrees
+ */
+void ASFBStarTree::repackModifiedNodes() {
+    if (modifiedNodes.empty()) return;
+    
+    // Initialize contours
+    initializeContours();
+    
+    // Sort modified nodes by depth (deepest first)
+    std::vector<shared_ptr<BStarTreeNode>> sortedNodes(modifiedNodes.begin(), modifiedNodes.end());
+    std::sort(sortedNodes.begin(), sortedNodes.end(), 
+             [](const shared_ptr<BStarTreeNode>& a, const shared_ptr<BStarTreeNode>& b) {
+                 int depthA = 0, depthB = 0;
+                 auto currA = a, currB = b;
+                 
+                 while (currA->getParent()) {
+                     depthA++;
+                     currA = currA->getParent();
+                 }
+                 
+                 while (currB->getParent()) {
+                     depthB++;
+                     currB = currB->getParent();
+                 }
+                 
+                 return depthA > depthB;
+             });
+    
+    // Pack each modified node
+    for (const auto& node : sortedNodes) {
+        packNode(node);
+    }
+    
+    // Apply special positioning for self-symmetric modules
+    calculateSelfSymmetricModulePositions();
+    
+    // Mirror non-representative modules
+    mirrorNonRepresentativeModules();
+    
+    // Clear modified nodes
+    modifiedNodes.clear();
 }
 
 /**
@@ -205,78 +293,13 @@ bool ASFBStarTree::pack() {
         }
     }
     
-    // Set the symmetry axis position
-    if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
-        // For vertical symmetry, calculate proper axis position
-        double sumX = 0.0;
-        int count = 0;
-        for (const auto& pair : modules) {
-            if (isRepresentative(pair.first)) {
-                double centerX = pair.second->getX() + pair.second->getWidth() / 2.0;
-                sumX += centerX;
-                count++;
-            }
-        }
-        symmetryAxisPosition = (count > 0) ? (sumX / count) : 0.0;
-    } else {
-        // For horizontal symmetry, calculate proper axis position
-        double sumY = 0.0;
-        int count = 0;
-        for (const auto& pair : modules) {
-            if (isRepresentative(pair.first)) {
-                double centerY = pair.second->getY() + pair.second->getHeight() / 2.0;
-                sumY += centerY;
-                count++;
-            }
-        }
-        symmetryAxisPosition = (count > 0) ? (sumY / count) : 0.0;
-    }
+    // Apply special positioning for self-symmetric modules
+    calculateSelfSymmetricModulePositions();
     
-    // Calculate positions for symmetric modules
-    calculateSymmetricModulePositions();
+    // Mirror non-representative modules
+    mirrorNonRepresentativeModules();
     
     return true;
-}
-
-/**
- * Repack only the modified nodes and their subtrees
- */
-void ASFBStarTree::repackModifiedNodes() {
-    if (modifiedNodes.empty()) return;
-    
-    // Initialize contours
-    initializeContours();
-    
-    // Sort modified nodes by depth (deepest first)
-    std::vector<shared_ptr<BStarTreeNode>> sortedNodes(modifiedNodes.begin(), modifiedNodes.end());
-    std::sort(sortedNodes.begin(), sortedNodes.end(), 
-             [](const shared_ptr<BStarTreeNode>& a, const shared_ptr<BStarTreeNode>& b) {
-                 int depthA = 0, depthB = 0;
-                 auto currA = a, currB = b;
-                 
-                 while (currA->getParent()) {
-                     depthA++;
-                     currA = currA->getParent();
-                 }
-                 
-                 while (currB->getParent()) {
-                     depthB++;
-                     currB = currB->getParent();
-                 }
-                 
-                 return depthA > depthB;
-             });
-    
-    // Pack each modified node
-    for (const auto& node : sortedNodes) {
-        packNode(node);
-    }
-    
-    // Calculate positions for symmetric modules
-    calculateSymmetricModulePositions();
-    
-    // Clear modified nodes
-    modifiedNodes.clear();
 }
 
 /**
@@ -285,25 +308,8 @@ void ASFBStarTree::repackModifiedNodes() {
 bool ASFBStarTree::isSymmetricFeasible() const {
     // Check self-symmetric modules
     for (const auto& moduleName : selfSymmetricModules) {
-        auto node = [this, &moduleName]() -> shared_ptr<BStarTreeNode> {
-            // Find the node for this module
-            queue<shared_ptr<BStarTreeNode>> queue;
-            if (root) queue.push(root);
-            
-            while (!queue.empty()) {
-                auto current = queue.front();
-                queue.pop();
-                
-                if (current->getModuleName() == moduleName) {
-                    return current;
-                }
-                
-                if (current->getLeftChild()) queue.push(current->getLeftChild());
-                if (current->getRightChild()) queue.push(current->getRightChild());
-            }
-            
-            return nullptr;
-        }();
+        auto node = findNode(moduleName);
+        if (!node) continue;
         
         // For vertical symmetry, self-symmetric modules must be on the rightmost branch
         if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
@@ -338,28 +344,31 @@ bool ASFBStarTree::isSymmetricFeasible() const {
  * Rotates a module in the symmetry group
  */
 bool ASFBStarTree::rotateModule(const string& moduleName) {
+    // Check if the module exists
     auto it = modules.find(moduleName);
-    if (it == modules.end()) return false;
-    
-    auto module = it->second;
-    
-    // Special handling for symmetry pairs and self-symmetric modules
-    auto pairIt = symmetricPairMap.find(moduleName);
-    auto selfIt = find(selfSymmetricModules.begin(), selfSymmetricModules.end(), moduleName);
-    
-    if (pairIt != symmetricPairMap.end()) {
-        // For symmetry pairs, rotate both modules
-        auto pairModule = modules[pairIt->second];
-        if (pairModule) {
-            pairModule->rotate();
-        }
-    } else if (selfIt != selfSymmetricModules.end()) {
-        // For self-symmetric modules, update the shape of its representative
-        // This is a simplification - in reality, more complex handling might be needed
+    if (it == modules.end() || !it->second) {
+        cerr << "Error: Module " << moduleName << " not found" << endl;
+        return false;
     }
     
-    // Rotate the module
+    // Check if this is a representative module
+    if (!isRepresentative(moduleName)) {
+        cerr << "Error: Can only rotate representative modules" << endl;
+        return false;
+    }
+    
+    // Get the representative module
+    auto module = it->second;
+    
+    // For rotation, just swap width and height; don't modify coordinates
+    // The coordinates will be recalculated during packing
     module->rotate();
+    
+    // Mark the module's node for repacking
+    auto node = findNode(moduleName);
+    if (node) {
+        markNodeForRepack(node);
+    }
     
     return true;
 }
@@ -370,14 +379,24 @@ bool ASFBStarTree::rotateModule(const string& moduleName) {
 bool ASFBStarTree::moveNode(const string& nodeName, 
                            const string& newParentName, 
                            bool asLeftChild) {
+    // Check if the nodes are representatives
+    if (!isRepresentative(nodeName) || !isRepresentative(newParentName)) {
+        cerr << "Error: Can only move representative nodes" << endl;
+        return false;
+    }
+    
     // Use direct lookup instead of traversing the tree
     auto node = findNode(nodeName);
     auto newParent = findNode(newParentName);
     
-    if (!node || !newParent) return false;
+    if (!node || !newParent) {
+        cerr << "Error: Node or parent not found" << endl;
+        return false;
+    }
     
     // Check if the move is valid
     if (!canMoveNode(node, newParent, asLeftChild)) {
+        cerr << "Error: Invalid move - would violate symmetry constraints" << endl;
         return false;
     }
     
@@ -398,7 +417,6 @@ bool ASFBStarTree::moveNode(const string& nodeName,
         auto existingChild = newParent->getLeftChild();
         if (existingChild) {
             // Try to find a place for the existing child
-            // This is a simplification - in practice, more sophisticated handling is needed
             node->setLeftChild(existingChild);
             existingChild->setParent(node);
         }
@@ -408,7 +426,6 @@ bool ASFBStarTree::moveNode(const string& nodeName,
         auto existingChild = newParent->getRightChild();
         if (existingChild) {
             // Try to find a place for the existing child
-            // This is a simplification - in practice, more sophisticated handling is needed
             node->setRightChild(existingChild);
             existingChild->setParent(node);
         }
@@ -417,12 +434,9 @@ bool ASFBStarTree::moveNode(const string& nodeName,
     
     markNodeForRepack(node);
     markNodeForRepack(newParent);
-    if (node->getParent()) {
-        markNodeForRepack(node->getParent());
+    if (oldParent) {
+        markNodeForRepack(oldParent);
     }
-    
-    // Pack the modified nodes
-    repackModifiedNodes();
     
     return true;
 }
@@ -431,11 +445,20 @@ bool ASFBStarTree::moveNode(const string& nodeName,
  * Swaps two nodes in the tree
  */
 bool ASFBStarTree::swapNodes(const string& nodeName1, const string& nodeName2) {
+    // Check if the nodes are representatives
+    if (!isRepresentative(nodeName1) || !isRepresentative(nodeName2)) {
+        cerr << "Error: Can only swap representative nodes" << endl;
+        return false;
+    }
+    
     // Use direct lookup instead of traversing the tree
     auto node1 = findNode(nodeName1);
     auto node2 = findNode(nodeName2);
     
-    if (!node1 || !node2) return false;
+    if (!node1 || !node2) {
+        cerr << "Error: Node not found" << endl;
+        return false;
+    }
     
     // Check if both nodes can be swapped
     // Self-symmetric modules have special restrictions
@@ -449,80 +472,17 @@ bool ASFBStarTree::swapNodes(const string& nodeName1, const string& nodeName2) {
             // Swap is allowed
         } else {
             // One is on the boundary, one is not - swap not allowed
+            cerr << "Error: Cannot swap self-symmetric and non-self-symmetric modules" << endl;
             return false;
         }
     }
     
-    // Instead of setting module names (which we can't do), swap the parent-child relationships
-    // Get parents and positions
-    auto parent1 = node1->getParent();
-    auto parent2 = node2->getParent();
+    // Swap the module names instead of the nodes themselves
+    node1->swapModuleName(node2);
     
-    bool isLeftChild1 = parent1 && parent1->getLeftChild() == node1;
-    bool isLeftChild2 = parent2 && parent2->getLeftChild() == node2;
-    
-    // Detach nodes from parents
-    if (parent1) {
-        if (isLeftChild1) parent1->setLeftChild(nullptr);
-        else parent1->setRightChild(nullptr);
-    }
-    
-    if (parent2) {
-        if (isLeftChild2) parent2->setLeftChild(nullptr);
-        else parent2->setRightChild(nullptr);
-    }
-    
-    // Reattach nodes to opposite parents
-    if (parent1) {
-        if (isLeftChild1) parent1->setLeftChild(node2);
-        else parent1->setRightChild(node2);
-        node2->setParent(parent1);
-    } else {
-        // node1 was the root
-        root = node2;
-        node2->setParent(nullptr);
-    }
-    
-    if (parent2) {
-        if (isLeftChild2) parent2->setLeftChild(node1);
-        else parent2->setRightChild(node1);
-        node1->setParent(parent2);
-    } else {
-        // node2 was the root
-        root = node1;
-        node1->setParent(nullptr);
-    }
-    
-    // Swap children too
-    auto leftChild1 = node1->getLeftChild();
-    auto rightChild1 = node1->getRightChild();
-    auto leftChild2 = node2->getLeftChild();
-    auto rightChild2 = node2->getRightChild();
-    
-    // Set children for node1
-    node1->setLeftChild(leftChild2);
-    node1->setRightChild(rightChild2);
-    if (leftChild2) leftChild2->setParent(node1);
-    if (rightChild2) rightChild2->setParent(node1);
-    
-    // Set children for node2
-    node2->setLeftChild(leftChild1);
-    node2->setRightChild(rightChild1);
-    if (leftChild1) leftChild1->setParent(node2);
-    if (rightChild1) rightChild1->setParent(node2);
-    
-    // Mark affected nodes for repacking
+    // Mark both nodes for repacking
     markNodeForRepack(node1);
     markNodeForRepack(node2);
-    if (node1->getParent()) {
-        markNodeForRepack(node1->getParent());
-    }
-    if (node2->getParent()) {
-        markNodeForRepack(node2->getParent());
-    }
-    
-    // Pack the modified nodes
-    repackModifiedNodes();
     
     return true;
 }
@@ -533,21 +493,34 @@ bool ASFBStarTree::swapNodes(const string& nodeName1, const string& nodeName2) {
 bool ASFBStarTree::changeRepresentative(const string& moduleName) {
     // Find the symmetry pair
     auto pairIt = symmetricPairMap.find(moduleName);
-    if (pairIt == symmetricPairMap.end()) return false;
+    if (pairIt == symmetricPairMap.end()) {
+        cerr << "Error: Module " << moduleName << " is not part of a symmetry pair" << endl;
+        return false;
+    }
     
     string module1 = moduleName;
     string module2 = pairIt->second;
     
-    // Update the representative map
-    if (representativeMap[module1] == module2) {
-        // Change representative from module2 to module1
-        representativeMap[module1] = module1;
-        representativeMap[module2] = module1;
-    } else {
-        // Change representative from module1 to module2
-        representativeMap[module1] = module2;
-        representativeMap[module2] = module2;
+    // Determine current representative
+    string currentRep = getRepresentative(module1);
+    if (currentRep.empty()) {
+        cerr << "Error: No representative found for " << module1 << endl;
+        return false;
     }
+    
+    // Determine which module should become the new representative
+    string newRep = (currentRep == module1) ? module2 : module1;
+    string oldRep = currentRep;
+    
+    // Update the representative map
+    representativeMap[module1] = newRep;
+    representativeMap[module2] = newRep;
+    
+    // Update representative sets
+    representativeModules.erase(oldRep);
+    representativeModules.insert(newRep);
+    nonRepresentativeModules.erase(newRep);
+    nonRepresentativeModules.insert(oldRep);
     
     // Rebuild the tree with the new representative
     constructInitialTree();
@@ -567,6 +540,12 @@ bool ASFBStarTree::convertSymmetryType() {
     } else {
         symmetryGroup->setType(SymmetryType::VERTICAL);
     }
+    
+    // Reset the axis lock
+    axisPositionLocked = false;
+    
+    // Re-lock the axis with the new type
+    lockSymmetryAxis();
     
     // Rotate all modules
     for (auto& pair : modules) {

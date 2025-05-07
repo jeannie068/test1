@@ -33,6 +33,13 @@ public:
     std::string getModuleName() const;
     
     /**
+     * Sets the module name
+     * 
+     * @param name New module name
+     */
+    void setModuleName(const std::string& name);
+    
+    /**
      * Gets the left child (module to the right)
      * 
      * @return Left child node
@@ -108,4 +115,11 @@ public:
      * @return Number of nodes in the subtree
      */
     int countSubtreeNodes() const;
+    
+    /**
+     * Swaps module names between two nodes
+     * 
+     * @param other Node to swap module name with
+     */
+    void swapModuleName(std::shared_ptr<BStarTreeNode> other);
 };

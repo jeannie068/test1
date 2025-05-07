@@ -21,27 +21,47 @@ ASFBStarTree::ASFBStarTree(shared_ptr<SymmetryGroup> symGroup)
       symmetryGroup(symGroup),
       horizontalContour(make_shared<Contour>()),
       verticalContour(make_shared<Contour>()),
-      symmetryAxisPosition(0.0) {
+      symmetryAxisPosition(0.0),
+      axisPositionLocked(false) {
     
-    // Initialize representative and symmetry pair maps
-    if (symmetryGroup) {
-        // Process symmetry pairs
-        for (const auto& pair : symmetryGroup->getSymmetryPairs()) {
-            // For each symmetry pair, choose the second module as the representative
-            representativeMap[pair.first] = pair.second;
-            representativeMap[pair.second] = pair.second;  // Representative represents itself
-            
-            // Track the symmetric pair relationship
-            symmetricPairMap[pair.first] = pair.second;
-            symmetricPairMap[pair.second] = pair.first;
-        }
+    if (!symmetryGroup) {
+        cerr << "Error: Null symmetry group provided to ASF-B*-tree" << endl;
+        return;
+    }
+    
+    // Process symmetry pairs and determine representatives
+    for (const auto& pair : symmetryGroup->getSymmetryPairs()) {
+        const string& module1 = pair.first;
+        const string& module2 = pair.second;
         
-        // Process self-symmetric modules
-        for (const auto& moduleName : symmetryGroup->getSelfSymmetric()) {
-            // For a self-symmetric module, it represents itself but half of it
-            representativeMap[moduleName] = moduleName;
-            selfSymmetricModules.push_back(moduleName);
+        // For each symmetry pair, choose the module with lexicographically larger name as representative
+        string representative = (module1 < module2) ? module2 : module1;
+        string nonRepresentative = (representative == module1) ? module2 : module1;
+        
+        // Track the representative relationship
+        representativeMap[module1] = representative;
+        representativeMap[module2] = representative;
+        
+        // Track the symmetric pair relationship
+        symmetricPairMap[module1] = module2;
+        symmetricPairMap[module2] = module1;
+        
+        // Add to appropriate sets
+        if (representative == module1) {
+            representativeModules.insert(module1);
+            nonRepresentativeModules.insert(module2);
+        } else {
+            representativeModules.insert(module2);
+            nonRepresentativeModules.insert(module1);
         }
+    }
+    
+    // Process self-symmetric modules
+    for (const auto& moduleName : symmetryGroup->getSelfSymmetric()) {
+        // For a self-symmetric module, it represents itself
+        representativeMap[moduleName] = moduleName;
+        selfSymmetricModules.push_back(moduleName);
+        representativeModules.insert(moduleName);
     }
 }
 
@@ -61,6 +81,58 @@ void ASFBStarTree::addModule(shared_ptr<Module> module) {
 }
 
 /**
+ * Locks the symmetry axis based on the symmetry type
+ * This is called once after all modules are added
+ */
+void ASFBStarTree::lockSymmetryAxis() {
+    if (axisPositionLocked) return;
+    
+    // Calculate a locked symmetry axis position based on initial module positions
+    // For vertical symmetry, we start with a central position
+    if (symmetryGroup->getType() == SymmetryType::VERTICAL) {
+        // Calculate a reasonable x-axis position based on the width of modules
+        int totalWidth = 0;
+        int count = 0;
+        
+        for (const auto& moduleName : representativeModules) {
+            auto it = modules.find(moduleName);
+            if (it != modules.end() && it->second) {
+                totalWidth += it->second->getWidth();
+                count++;
+            }
+        }
+        
+        if (count > 0) {
+            symmetryAxisPosition = totalWidth / count; // Simple average for initialization
+        } else {
+            symmetryAxisPosition = 0.0;
+        }
+    } else { // HORIZONTAL symmetry
+        // Calculate a reasonable y-axis position
+        int totalHeight = 0;
+        int count = 0;
+        
+        for (const auto& moduleName : representativeModules) {
+            auto it = modules.find(moduleName);
+            if (it != modules.end() && it->second) {
+                totalHeight += it->second->getHeight();
+                count++;
+            }
+        }
+        
+        if (count > 0) {
+            symmetryAxisPosition = totalHeight / count;
+        } else {
+            symmetryAxisPosition = 0.0;
+        }
+    }
+    
+    axisPositionLocked = true;
+    
+    cout << "Locked symmetry axis position: " << symmetryAxisPosition << endl;
+}
+
+/**
  * Constructs an initial ASF-B*-tree based on the symmetry group
  */
 void ASFBStarTree::constructInitialTree() {
@@ -68,22 +140,30 @@ void ASFBStarTree::constructInitialTree() {
     root = nullptr;
     nodeMap.clear();
     
-    // First, collect all representatives
+    // Lock the symmetry axis position if not already locked
+    if (!axisPositionLocked) {
+        lockSymmetryAxis();
+    }
+    
+    // Collect all representatives for the B*-tree
     vector<string> representatives;
-    for (const auto& pair : modules) {
-        const string& moduleName = pair.first;
-        if (isRepresentative(moduleName)) {
+    for (const auto& moduleName : representativeModules) {
+        auto it = modules.find(moduleName);
+        if (it != modules.end() && it->second) {
             representatives.push_back(moduleName);
         }
     }
     
-    if (representatives.empty()) return;
+    if (representatives.empty()) {
+        cerr << "Error: No representatives found for ASF-B*-tree" << endl;
+        return;
+    }
     
     // Sort representatives by area (largest first)
     sort(representatives.begin(), representatives.end(), 
-              [this](const string& a, const string& b) {
-                  return modules[a]->getArea() > modules[b]->getArea();
-              });
+         [this](const string& a, const string& b) {
+             return modules[a]->getArea() > modules[b]->getArea();
+         });
     
     // Create the root node with the first representative
     root = make_shared<BStarTreeNode>(representatives[0]);
@@ -95,9 +175,9 @@ void ASFBStarTree::constructInitialTree() {
     for (size_t i = 1; i < representatives.size(); ++i) {
         auto newNode = make_shared<BStarTreeNode>(representatives[i]);
         
-        // Case: self-symmetric module - it must be on the boundary
+        // For self-symmetric modules, they must be on the boundary
         if (find(selfSymmetricModules.begin(), selfSymmetricModules.end(), 
-                      representatives[i]) != selfSymmetricModules.end()) {
+                 representatives[i]) != selfSymmetricModules.end()) {
             
             // Place self-symmetric modules on the rightmost branch for vertical symmetry
             // or leftmost branch for horizontal symmetry
@@ -119,7 +199,7 @@ void ASFBStarTree::constructInitialTree() {
                 newNode->setParent(current);
             }
         } else {
-            // Case: symmetry pairs - can place anywhere
+            // For symmetry pairs, can place anywhere
             // For simplicity, place them as right children of the rightmost node
             auto current = root;
             while (current->getRightChild()) {
@@ -149,10 +229,17 @@ int ASFBStarTree::getArea() const {
     for (const auto& pair : modules) {
         const auto& module = pair.second;
         
-        minX = min(minX, module->getX());
-        minY = min(minY, module->getY());
-        maxX = max(maxX, module->getX() + module->getWidth());
-        maxY = max(maxY, module->getY() + module->getHeight());
+        if (module) {
+            minX = min(minX, module->getX());
+            minY = min(minY, module->getY());
+            maxX = max(maxX, module->getX() + module->getWidth());
+            maxY = max(maxY, module->getY() + module->getHeight());
+        }
+    }
+    
+    // If minX/minY are still at max value, no valid modules were found
+    if (minX == numeric_limits<int>::max() || minY == numeric_limits<int>::max()) {
+        return 0;
     }
     
     return (maxX - minX) * (maxY - minY);
@@ -215,13 +302,17 @@ bool ASFBStarTree::canMoveNode(const shared_ptr<BStarTreeNode>& node,
 
 // Direct node lookup by name
 shared_ptr<BStarTreeNode> ASFBStarTree::findNode(const string& nodeName) const {
+    // Only look for representative nodes in the ASF-B*-tree
+    if (!isRepresentative(nodeName)) {
+        return nullptr;
+    }
+    
     auto it = nodeMap.find(nodeName);
     if (it != nodeMap.end()) {
         return it->second;
     }
     
     // If not found in the map, traverse the tree
-    // This should rarely happen after initialization
     std::queue<shared_ptr<BStarTreeNode>> queue;
     if (root) queue.push(root);
     
@@ -309,11 +400,7 @@ string ASFBStarTree::getRepresentative(const string& moduleName) const {
  * Checks if a module is a representative
  */
 bool ASFBStarTree::isRepresentative(const string& moduleName) const {
-    auto it = representativeMap.find(moduleName);
-    if (it == representativeMap.end()) return false;
-    
-    // A module is a representative if it represents itself
-    return it->second == moduleName;
+    return representativeModules.count(moduleName) > 0;
 }
 
 /**
@@ -328,13 +415,16 @@ shared_ptr<ASFBStarTree> ASFBStarTree::clone() const {
         clone->modules[pair.first] = moduleCopy;
     }
     
-    // Copy representative map and symmetry pair map
+    // Copy representative maps and sets
     clone->representativeMap = representativeMap;
     clone->symmetricPairMap = symmetricPairMap;
     clone->selfSymmetricModules = selfSymmetricModules;
+    clone->representativeModules = representativeModules;
+    clone->nonRepresentativeModules = nonRepresentativeModules;
     
-    // Copy symmetry axis position
+    // Copy symmetry axis position and lock status
     clone->symmetryAxisPosition = symmetryAxisPosition;
+    clone->axisPositionLocked = axisPositionLocked;
     
     // Clone the tree structure
     if (root) {

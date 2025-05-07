@@ -2,6 +2,7 @@
 
 #include "BStarTreeNode.hpp"
 #include <queue>
+#include <algorithm>
 
 /**
  * Constructor
@@ -18,6 +19,10 @@ BStarTreeNode::~BStarTreeNode() {
 
 std::string BStarTreeNode::getModuleName() const {
     return moduleName;
+}
+
+void BStarTreeNode::setModuleName(const std::string& name) {
+    moduleName = name;
 }
 
 std::shared_ptr<BStarTreeNode> BStarTreeNode::getLeftChild() const {
@@ -121,4 +126,12 @@ int BStarTreeNode::countSubtreeNodes() const {
     }
     
     return count;
+}
+
+/**
+ * Swaps module names between two nodes
+ */
+void BStarTreeNode::swapModuleName(std::shared_ptr<BStarTreeNode> other) {
+    if (!other) return;
+    std::swap(this->moduleName, other->moduleName);
 }
