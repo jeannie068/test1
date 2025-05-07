@@ -1,3 +1,4 @@
+// SA.hpp - Optimized Simulated Annealing for Analog Placement
 #pragma once
 
 #include <memory>
@@ -7,9 +8,92 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <unordered_map>
+#include <limits>
 #include "../data_struct/HBStarTree.hpp"
 #include "../utils/TimeoutManager.hpp"
-#include "../utils/AdaptivePerturbation.hpp"
+
+// Forward declarations
+class Move;
+class MovePool;
+
+// Object pool for Move objects to reduce memory allocations
+class MovePool {
+private:
+    static constexpr size_t BLOCK_SIZE = 1024; // Increase block size from 256 to 1024
+    std::vector<std::vector<Move*>> blocks;
+    std::vector<Move*> freeList;
+    int allocations = 0; // Track number of blocks allocated
+
+public:
+    MovePool();
+    ~MovePool();
+
+    // Create a new move from the pool
+    Move* createMove(const std::string& type, 
+                    const std::string& param1 = "", 
+                    const std::string& param2 = "", 
+                    bool boolParam = false);
+
+    // Return a move to the pool
+    void releaseMove(Move* move);
+
+    // Allocate a new block of moves
+    void allocateBlock();
+    
+    // Get stats about the pool
+    int getAllocatedBlocks() const { return allocations; }
+    int getFreeListSize() const { return freeList.size(); }
+};
+
+// Lightweight Move class to represent a single perturbation
+// In SA.hpp - Update Move class
+class Move {
+    friend class MovePool;
+    friend class SimulatedAnnealing;
+
+private:
+    std::string operationType;      // "rotate", "move", "swap", "changeRep", "convertSym"
+    std::string param1;             // First parameter (e.g., moduleName, nodeName1)
+    std::string param2;             // Second parameter (e.g., newParentName, nodeName2)
+    bool boolParam;                 // Boolean parameter (e.g., asLeftChild)
+    
+    // State for undoing moves
+    std::string originalParent;     // Original parent for move operations
+    bool wasLeftChild;              // Whether the node was a left child
+    std::string originalRepresentative; // Original representative for changeRep
+    SymmetryType originalSymType;   // Original symmetry type
+
+    // Private constructor - only MovePool can create Moves
+    Move(const std::string& type, 
+         const std::string& p1 = "", 
+         const std::string& p2 = "", 
+         bool bp = false);
+
+public:
+    // No copy/move constructors - managed by the pool
+    Move(const Move&) = delete;
+    Move& operator=(const Move&) = delete;
+    Move(Move&&) = delete;
+    Move& operator=(Move&&) = delete;
+
+    // Getters
+    const std::string& getType() const { return operationType; }
+    const std::string& getParam1() const { return param1; }
+    const std::string& getParam2() const { return param2; }
+    bool getBoolParam() const { return boolParam; }
+    
+    // Reset the move state
+    void reset() {
+        operationType = "none";
+        param1 = "";
+        param2 = "";
+        boolParam = false;
+        originalParent = "";
+        wasLeftChild = false;
+        originalRepresentative = "";
+    }
+};
 
 class SimulatedAnnealing {
 private:
@@ -29,7 +113,7 @@ private:
     double initialTemperature;
     double finalTemperature;
     double coolingRate;
-    int iterationsPerTemperature;
+    int movesPerTemperature;
     int noImprovementLimit;
     
     // Random number generation - mutable to allow usage in const methods
@@ -54,16 +138,19 @@ private:
     double wirelengthWeight;
 
     // Timeout related
-    chrono::steady_clock::time_point startTime;
-    chrono::seconds timeoutSeconds;
+    std::chrono::steady_clock::time_point startTime;
+    std::chrono::seconds timeoutSeconds;
     std::shared_ptr<TimeoutManager> timeoutManager;
     bool checkTimeout() const;
 
     // Adaptive perturbation system
-    AdaptivePerturbation adaptivePerturbation;
-    
-    // Track last operation for statistics
     std::string lastOperation;
+    
+    // Move pool for memory efficiency
+    MovePool movePool;
+    
+    // Move history for the current temperature
+    std::vector<Move*> acceptedMoveHistory;
     
     /**
      * Calculates the cost of a solution
@@ -71,34 +158,19 @@ private:
     int calculateCost(const std::shared_ptr<HBStarTree>& solution) const;
     
     /**
-     * Performs a random perturbation on the current solution
+     * Generates a random perturbation move
      */
-    bool perturb();
+    Move* generateMove();
     
     /**
-     * Rotates a random module
+     * Applies a move to the current solution
      */
-    bool perturbRotate();
+    void applyMove(Move* move);
     
     /**
-     * Moves a random node to a new position
+     * Undoes a move on the current solution
      */
-    bool perturbMove();
-    
-    /**
-     * Swaps two random nodes
-     */
-    bool perturbSwap();
-    
-    /**
-     * Changes the representative of a symmetry pair in a random symmetry group
-     */
-    bool perturbChangeRepresentative();
-    
-    /**
-     * Converts the symmetry type of a random symmetry group
-     */
-    bool perturbConvertSymmetryType();
+    void undoMove(Move* move);
     
     /**
      * Decides whether to accept a move based on the cost difference and temperature
@@ -129,6 +201,19 @@ private:
      * @return Name of the selected node
      */
     std::string selectRandomNode() const;
+    
+    /**
+     * Initializes the temperature based on average cost delta
+     */
+    void initializeTemperature();
+    
+    /**
+     * Process one temperature level
+     * 
+     * @param temperature Current temperature
+     * @return True if any improvement was made
+     */
+    bool processTemperature(double temperature);
 
 public:
     /**
@@ -137,9 +222,9 @@ public:
     SimulatedAnnealing(std::shared_ptr<HBStarTree> initialSolution,
                       double initialTemp = 1000.0,
                       double finalTemp = 0.1,
-                      double coolingRate = 0.95,
-                      int iterations = 100,
-                      int noImprovementLimit = 1000);
+                      double coolingRate = 0.90,
+                      int iterations = 1500,
+                      int noImprovementLimit = 3);
     
     /**
      * Sets the perturbation probabilities
@@ -154,6 +239,7 @@ public:
                                      double changeRep, double convertSym);
     
     void validateBestSolution();
+    string selectRandomRepresentativeModule() const;
 
     /**
      * Sets the cost function weights

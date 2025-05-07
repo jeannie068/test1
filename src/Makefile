@@ -1,4 +1,4 @@
-# Add this line to your src/Makefile to include the new AdaptivePerturbation class
+# Makefile for HW4 with optimized SA implementation
 
 CXX      := g++
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -MMD

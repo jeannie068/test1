@@ -53,12 +53,24 @@ bool Module::getRotated() const {
 
 // Setters
 void Module::setPosition(int x, int y) {
+    // Always ensure non-negative coordinates
     if (x < 0 || y < 0) {
         std::cerr << "Warning: Setting negative position (" << x << "," << y 
                   << ") for module '" << name << "'" << std::endl;
+        
+        // Capture more debug info - this is causing multiple issues
+        std::cout << "DEBUG: Module '" << name << "' details:" << std::endl;
+        std::cout << "  Original dimensions: " << width << "x" << height << std::endl;
+        std::cout << "  Rotated: " << (isRotated ? "Yes" : "No") << std::endl;
+        std::cout << "  Effective dimensions: " << getWidth() << "x" << getHeight() << std::endl;
+        
+        // Force to valid coordinates
+        this->x = std::max(0, x);
+        this->y = std::max(0, y);
+    } else {
+        this->x = x;
+        this->y = y;
     }
-    this->x = std::max(0, x); // Ensure non-negative coordinates
-    this->y = std::max(0, y);
 }
 
 void Module::rotate() {

@@ -11,11 +11,11 @@ using namespace std;
  */
 PlacementSolver::PlacementSolver()
     : hbTree(nullptr),
-      initialTemperature(1000.0),
+      initialTemperature(0.0), // Will be calculated adaptively
       finalTemperature(0.1),
-      coolingRate(0.95),
-      iterationsPerTemperature(100),
-      noImprovementLimit(1000),
+      coolingRate(0.90), // Per the suggested optimization
+      iterationsPerTemperature(1500), // 1000-2000 moves per temp as suggested
+      noImprovementLimit(3), // Cooling faster after 3 consecutive temperatures with no improvement
       probRotate(0.3),
       probMove(0.3),
       probSwap(0.3),
@@ -102,7 +102,7 @@ void PlacementSolver::createInitialSolution() {
  */
 void PlacementSolver::setAnnealingParameters(double initialTemp, double finalTemp, double coolRate, 
                                            int iterations, int noImprovementLimit) {
-    initialTemperature = initialTemp;
+    // Note: initialTemp will be calculated adaptively in the SA algorithm
     finalTemperature = finalTemp;
     coolingRate = coolRate;
     iterationsPerTemperature = iterations;
@@ -158,7 +158,7 @@ void PlacementSolver::setRandomSeed(unsigned int seed) {
 }
 
 /**
- * Solves the placement problem using simulated annealing
+ * Solves the placement problem using optimized simulated annealing
  */
 bool PlacementSolver::solve() {
     // Create initial solution if not already created
@@ -179,16 +179,16 @@ bool PlacementSolver::solve() {
     int initialArea = hbTree->getArea();
     cout << "Initial area: " << initialArea << endl;
     
-    cout << "Starting simulated annealing..." << endl;
-    cout << "Initial temperature: " << initialTemperature << endl;
+    cout << "Starting optimized simulated annealing..." << endl;
+    cout << "Initial temperature: Will be calculated adaptively" << endl;
     cout << "Final temperature: " << finalTemperature << endl;
     cout << "Cooling rate: " << coolingRate << endl;
     cout << "Iterations per temperature: " << iterationsPerTemperature << endl;
     cout << "No improvement limit: " << noImprovementLimit << endl;
     
-    // Create the simulated annealing solver
+    // Create the simulated annealing solver with optimized parameters
     SimulatedAnnealing sa(hbTree, 
-                          initialTemperature,
+                          initialTemperature, // Will be calculated adaptively in the SA constructor
                           finalTemperature,
                           coolingRate,
                           iterationsPerTemperature,

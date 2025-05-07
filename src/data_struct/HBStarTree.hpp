@@ -92,6 +92,10 @@ public:
      * Validates that the placement has no overlaps
      */
     bool validatePlacement() const;
+
+    bool validateAndFixOverlaps();
+
+    void shiftOverlappingModules();
     
     /**
      * Calculates the coordinates of all modules by packing the HB*-tree

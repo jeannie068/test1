@@ -65,10 +65,166 @@ bool HBStarTree::pack() {
     
     isPacked = true;
     
-    // Validate no overlaps in the final placement
-    validatePlacement();
+    // Validate and fix any overlaps in the final placement
+    bool valid = validateAndFixOverlaps();
+    
+    // If there were significant overlap issues, fix by shifting modules
+    if (!valid) {
+        cerr << "Warning: Overlaps detected after initial packing - attempting to fix" << endl;
+        shiftOverlappingModules();
+        
+        // Recalculate area after fixing overlaps
+        minX = std::numeric_limits<int>::max(), minY = std::numeric_limits<int>::max();
+        maxX = 0, maxY = 0;
+        
+        for (const auto& pair : modules) {
+            const auto& module = pair.second;
+            if (module) {
+                minX = std::min(minX, module->getX());
+                minY = std::min(minY, module->getY());
+                maxX = std::max(maxX, module->getX() + module->getWidth());
+                maxY = std::max(maxY, module->getY() + module->getHeight());
+            }
+        }
+        
+        if (minX < maxX && minY < maxY) {
+            totalArea = (maxX - minX) * (maxY - minY);
+        }
+    }
     
     return true;
+}
+
+bool HBStarTree::validateAndFixOverlaps() {
+    bool valid = true;
+    int fixedOverlaps = 0;
+    
+    // Check each pair of modules for overlap
+    for (auto it1 = modules.begin(); it1 != modules.end(); ++it1) {
+        const auto& module1 = it1->second;
+        if (!module1) continue;
+        
+        for (auto it2 = next(it1); it2 != modules.end(); ++it2) {
+            const auto& module2 = it2->second;
+            if (!module2) continue;
+            
+            // Check for overlap using box overlap test
+            bool overlaps = 
+                module1->getX() < module2->getX() + module2->getWidth() &&
+                module1->getX() + module1->getWidth() > module2->getX() &&
+                module1->getY() < module2->getY() + module2->getHeight() &&
+                module1->getY() + module1->getHeight() > module2->getY();
+                
+            if (overlaps) {
+                valid = false;
+                fixedOverlaps++;
+                
+                // Calculate overlap in each direction
+                int overlapX = min(module1->getX() + module1->getWidth(), 
+                                  module2->getX() + module2->getWidth()) - 
+                               max(module1->getX(), module2->getX());
+                
+                int overlapY = min(module1->getY() + module1->getHeight(), 
+                                  module2->getY() + module2->getHeight()) - 
+                               max(module1->getY(), module2->getY());
+                
+                // Choose the direction with smaller overlap to fix
+                if (overlapX <= overlapY) {
+                    // Resolve horizontally
+                    if (module1->getX() <= module2->getX()) {
+                        // Move module2 to the right of module1
+                        module2->setPosition(module1->getX() + module1->getWidth(), module2->getY());
+                        cerr << "Fixed horizontal overlap: moved " << it2->first 
+                             << " to the right of " << it1->first << endl;
+                    } else {
+                        // Move module1 to the right of module2
+                        module1->setPosition(module2->getX() + module2->getWidth(), module1->getY());
+                        cerr << "Fixed horizontal overlap: moved " << it1->first 
+                             << " to the right of " << it2->first << endl;
+                    }
+                } else {
+                    // Resolve vertically
+                    if (module1->getY() <= module2->getY()) {
+                        // Move module2 below module1
+                        module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+                        cerr << "Fixed vertical overlap: moved " << it2->first 
+                             << " below " << it1->first << endl;
+                    } else {
+                        // Move module1 below module2
+                        module1->setPosition(module1->getX(), module2->getY() + module2->getHeight());
+                        cerr << "Fixed vertical overlap: moved " << it1->first 
+                             << " below " << it2->first << endl;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (fixedOverlaps > 0) {
+        cerr << "Fixed " << fixedOverlaps << " overlaps in placement" << endl;
+    }
+    
+    return valid;
+}
+
+void HBStarTree::shiftOverlappingModules() {
+    // Create a grid of modules by x, y coordinates
+    map<int, map<int, shared_ptr<Module>>> grid;
+    
+    // Place modules in the grid
+    for (const auto& pair : modules) {
+        const auto& module = pair.second;
+        if (!module) continue;
+        
+        int x = module->getX();
+        int y = module->getY();
+        
+        // Check if there's already a module at this position
+        if (grid[x].find(y) != grid[x].end()) {
+            // There's already a module here, shift this one
+            int newY = y;
+            bool placed = false;
+            
+            // Try to find a free spot by shifting down
+            while (!placed) {
+                newY += 10;  // Shift by a small amount
+                if (grid[x].find(newY) == grid[x].end()) {
+                    // Found a free spot
+                    grid[x][newY] = module;
+                    module->setPosition(x, newY);
+                    placed = true;
+                    cerr << "Shifted module " << pair.first << " down to y=" << newY << endl;
+                }
+            }
+        } else {
+            // Position is free, add it to the grid
+            grid[x][y] = module;
+        }
+    }
+    
+    // Update contours after shifting
+    horizontalContour->clear();
+    verticalContour->clear();
+    
+    // Initialize horizontal contour with a segment at y=0
+    horizontalContour->addSegment(0, std::numeric_limits<int>::max(), 0);
+    
+    // Initialize vertical contour with a segment at x=0
+    verticalContour->addSegment(0, std::numeric_limits<int>::max(), 0);
+    
+    // Update contours with each module
+    for (const auto& pair : modules) {
+        const auto& module = pair.second;
+        if (!module) continue;
+        
+        int x = module->getX();
+        int y = module->getY();
+        int width = module->getWidth();
+        int height = module->getHeight();
+        
+        horizontalContour->addSegment(x, x + width, y + height);
+        verticalContour->addSegment(y, y + height, x + width);
+    }
 }
 
 /**
@@ -313,6 +469,7 @@ void HBStarTree::packSubtree(shared_ptr<HBStarTreeNode> node) {
  */
 bool HBStarTree::validatePlacement() const {
     bool valid = true;
+    int overlapsDetected = 0;
     
     // Check each pair of modules for overlap
     for (auto it1 = modules.begin(); it1 != modules.end(); ++it1) {
@@ -331,19 +488,57 @@ bool HBStarTree::validatePlacement() const {
                 module1->getY() + module1->getHeight() > module2->getY();
                 
             if (overlaps) {
-                // cerr << "Overlap detected between " << it1->first 
-                //      << " (" << module1->getX() << "," << module1->getY() 
-                //      << "," << module1->getWidth() << "," << module1->getHeight() 
-                //      << ") and " << it2->first 
-                //      << " (" << module2->getX() << "," << module2->getY() 
-                //      << "," << module2->getWidth() << "," << module2->getHeight() 
-                //      << ")" << endl;
-                valid = false;
+                cerr << "Overlap detected between " << it1->first 
+                     << " (" << module1->getX() << "," << module1->getY() 
+                     << "," << module1->getWidth() << "," << module1->getHeight() 
+                     << ") and " << it2->first 
+                     << " (" << module2->getX() << "," << module2->getY() 
+                     << "," << module2->getWidth() << "," << module2->getHeight() 
+                     << ")" << endl;
                 
-                // Emergency fix: move the second module below the first one
-                // cerr << "Emergency fix: moving " << it2->first << " below " << it1->first << endl;
-                module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+                valid = false;
+                overlapsDetected++;
+                
+                // Try to resolve the overlap intelligently
+                // Calculate overlap in each direction
+                int overlapX = min(module1->getX() + module1->getWidth(), 
+                                 module2->getX() + module2->getWidth()) - 
+                              max(module1->getX(), module2->getX());
+                
+                int overlapY = min(module1->getY() + module1->getHeight(), 
+                                 module2->getY() + module2->getHeight()) - 
+                              max(module1->getY(), module2->getY());
+                
+                // Choose the direction with smaller overlap to resolve
+                if (overlapX <= overlapY) {
+                    // Resolve horizontally
+                    if (module1->getX() <= module2->getX()) {
+                        // Move module2 to the right of module1
+                        module2->setPosition(module1->getX() + module1->getWidth(), module2->getY());
+                    } else {
+                        // Move module1 to the right of module2
+                        module1->setPosition(module2->getX() + module2->getWidth(), module1->getY());
+                    }
+                } else {
+                    // Resolve vertically
+                    if (module1->getY() <= module2->getY()) {
+                        // Move module2 below module1
+                        module2->setPosition(module2->getX(), module1->getY() + module1->getHeight());
+                    } else {
+                        // Move module1 below module2
+                        module1->setPosition(module1->getX(), module2->getY() + module2->getHeight());
+                    }
+                }
             }
+        }
+    }
+    
+    if (overlapsDetected > 0) {
+        cerr << "Fixed " << overlapsDetected << " overlaps in placement" << endl;
+        
+        // If many overlaps were fixed, trigger a repack to maintain consistency
+        if (overlapsDetected > 5) {
+            cerr << "Too many overlaps detected - consider repacking" << endl;
         }
     }
     

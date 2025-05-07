@@ -63,13 +63,13 @@ int main(int argc, char* argv[]) {
     PlacementSolver solver;
     solver.loadProblem(modules, symmetryGroups);
     
-    // Configure solver parameters
+    // Configure solver with optimized parameters
     solver.setAnnealingParameters(
-        1000.0,     // Initial temperature
-        10.0,        // Final temperature
-        0.85,       // Cooling rate
-        50,        // Iterations per temperature
-        300        // No improvement limit
+        0.0,        // Initial temperature - will be calculated adaptively in SA
+        1.0,        // Final temperature
+        0.90,       // Cooling rate - optimal as per SA experience
+        1500,       // Iterations per temperature (1000-2000 is recommended)
+        3           // No improvement limit - cool faster after 3 consecutive temps
     );
     
     solver.setPerturbationProbabilities(
@@ -117,7 +117,7 @@ int main(int argc, char* argv[]) {
     
     try {
         // Solve the placement problem
-        cout << "Solving placement problem..." << endl;
+        cout << "Solving placement problem with optimized simulated annealing..." << endl;
         bool success = solver.solve();
         
         // If we've reached here without timeout, write the output

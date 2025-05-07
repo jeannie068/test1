@@ -7,20 +7,191 @@
 #include <chrono>
 using namespace std;
 
-void SimulatedAnnealing::setTimeoutManager(shared_ptr<TimeoutManager> manager) {
-    timeoutManager = manager;
+// MovePool implementation
+MovePool::MovePool() {
+    // Preallocate the first block
+    allocateBlock();
+    cout << "MovePool initialized with block size: " << BLOCK_SIZE << endl;
 }
 
-bool SimulatedAnnealing::checkTimeout() const {
-    if (timeoutManager && timeoutManager->hasTimedOut()) {
-        return true;
+MovePool::~MovePool() {
+    // Clean up all allocated blocks
+    for (auto& block : blocks) {
+        for (auto* move : block) {
+            delete move;
+        }
     }
-    return false;
 }
 
-/**
- * Constructor
- */
+void MovePool::allocateBlock() {
+    blocks.emplace_back();
+    auto& newBlock = blocks.back();
+    newBlock.reserve(BLOCK_SIZE);
+    
+    // Create BLOCK_SIZE new Move objects
+    for (size_t i = 0; i < BLOCK_SIZE; ++i) {
+        Move* move = new Move("none");
+        newBlock.push_back(move);
+        freeList.push_back(move);
+    }
+    
+    allocations++;
+    if (allocations % 5 == 0) {
+        cout << "WARNING: MovePool created " << allocations 
+             << " blocks (" << allocations * BLOCK_SIZE << " moves) - possible memory issue" << endl;
+    }
+}
+
+// Update the MovePool::createMove function to initialize the new fields
+Move* MovePool::createMove(const std::string& type, 
+                          const std::string& param1, 
+                          const std::string& param2, 
+                          bool boolParam) {
+    // If no free moves, allocate a new block
+    if (freeList.empty()) {
+        allocateBlock();
+    }
+    
+    // Get a move from the free list
+    Move* move = freeList.back();
+    freeList.pop_back();
+    
+    // Initialize the move (as implemented earlier)
+    move->operationType = type;
+    move->param1 = param1;
+    move->param2 = param2;
+    move->boolParam = boolParam;
+    move->originalParent = "";
+    move->wasLeftChild = false;
+    move->originalRepresentative = "";
+    
+    return move;
+}
+
+void MovePool::releaseMove(Move* move) {
+    // Reset the move
+    move->reset(); // Use the reset method implemented earlier
+    
+    // Return to the free list
+    freeList.push_back(move);
+}
+
+// Move implementation
+Move::Move(const std::string& type, 
+           const std::string& p1, 
+           const std::string& p2, 
+           bool bp) 
+    : operationType(type), param1(p1), param2(p2), boolParam(bp) {
+}
+
+void SimulatedAnnealing::applyMove(Move* move) {
+    if (!move) return;
+    
+    const string& operation = move->getType();
+    
+    if (operation == "rotate") {
+        const string& moduleName = move->getParam1();
+        currentSolution->rotateModule(moduleName);
+    }
+    else if (operation == "move") {
+        const string& nodeName = move->getParam1();
+        const string& newParentName = move->getParam2();
+        bool asLeftChild = move->getBoolParam();
+        
+        // Store original state for undoing
+        auto node = currentSolution->findNode(nodeName);
+        if (node) {
+            auto parent = node->getParent();
+            if (parent) {
+                move->originalParent = parent->getModuleName();
+                move->wasLeftChild = node->isLeftChild();
+            }
+        }
+        
+        currentSolution->moveNode(nodeName, newParentName, asLeftChild);
+    }
+    else if (operation == "swap") {
+        const string& nodeName1 = move->getParam1();
+        const string& nodeName2 = move->getParam2();
+        currentSolution->swapNodes(nodeName1, nodeName2);
+    }
+    else if (operation == "changeRep") {
+        const string& symmetryGroupName = move->getParam1();
+        const string& moduleName = move->getParam2();
+        
+        // Store the original representative for undoing
+        // This is simplified - in a real implementation, you would
+        // need to get the actual current representative from the group
+        move->originalRepresentative = moduleName;
+        
+        currentSolution->changeRepresentative(symmetryGroupName, moduleName);
+    }
+    else if (operation == "convertSym") {
+        const string& symmetryGroupName = move->getParam1();
+        
+        // Find the symmetry group to store its original type
+        const auto& symmetryGroups = currentSolution->getSymmetryGroups();
+        for (const auto& group : symmetryGroups) {
+            if (group && group->getName() == symmetryGroupName) {
+                move->originalSymType = group->getType();
+                break;
+            }
+        }
+        
+        currentSolution->convertSymmetryType(symmetryGroupName);
+    }
+}
+
+void SimulatedAnnealing::undoMove(Move* move) {
+    if (!move) return;
+    
+    const string& operation = move->getType();
+    
+    if (operation == "rotate") {
+        // Rotating again undoes the rotation
+        const string& moduleName = move->getParam1();
+        currentSolution->rotateModule(moduleName);
+    }
+    else if (operation == "move") {
+        // Move back to original parent
+        if (!move->originalParent.empty()) {
+            const string& nodeName = move->getParam1();
+            currentSolution->moveNode(nodeName, move->originalParent, move->wasLeftChild);
+        }
+        else {
+            // If we don't have original parent info, fallback to using best solution
+            cout << "Warning: Missing original parent info for move undo - using fallback method" << endl;
+            auto originalSolution = bestSolution->clone();
+            currentSolution = originalSolution;
+        }
+    }
+    else if (operation == "swap") {
+        // Swapping again undoes the swap
+        const string& nodeName1 = move->getParam1();
+        const string& nodeName2 = move->getParam2();
+        currentSolution->swapNodes(nodeName1, nodeName2);
+    }
+    else if (operation == "changeRep") {
+        // Change back to original representative
+        if (!move->originalRepresentative.empty()) {
+            const string& symmetryGroupName = move->getParam1();
+            currentSolution->changeRepresentative(symmetryGroupName, move->originalRepresentative);
+        }
+        else {
+            // Fallback
+            cout << "Warning: Missing original representative info for changeRep undo - using fallback method" << endl;
+            auto originalSolution = bestSolution->clone();
+            currentSolution = originalSolution;
+        }
+    }
+    else if (operation == "convertSym") {
+        // Just convert again to undo
+        const string& symmetryGroupName = move->getParam1();
+        currentSolution->convertSymmetryType(symmetryGroupName);
+    }
+}
+
+// SimulatedAnnealing implementation
 SimulatedAnnealing::SimulatedAnnealing(shared_ptr<HBStarTree> initialSolution,
                                      double initialTemp,
                                      double finalTemp,
@@ -32,7 +203,7 @@ SimulatedAnnealing::SimulatedAnnealing(shared_ptr<HBStarTree> initialSolution,
       initialTemperature(initialTemp),
       finalTemperature(finalTemp),
       coolingRate(coolRate),
-      iterationsPerTemperature(iterations),
+      movesPerTemperature(iterations),
       noImprovementLimit(noImprovementLimit),
       uniformDist(0.0, 1.0),
       probRotate(0.3),
@@ -48,7 +219,6 @@ SimulatedAnnealing::SimulatedAnnealing(shared_ptr<HBStarTree> initialSolution,
       wirelengthWeight(0.0),
       startTime(chrono::steady_clock::now()),
       timeoutSeconds(0),
-      adaptivePerturbation(0.3, 0.3, 0.3, 0.05, 0.05),
       lastOperation("") {
     
     // Initialize random number generator with current time
@@ -69,11 +239,22 @@ SimulatedAnnealing::SimulatedAnnealing(shared_ptr<HBStarTree> initialSolution,
         currentCost = numeric_limits<int>::max();
         bestCost = numeric_limits<int>::max();
     }
+    
+    // Initialize temperature based on average cost delta
+    initializeTemperature();
 }
 
-/**
- * Sets the perturbation probabilities
- */
+void SimulatedAnnealing::setTimeoutManager(shared_ptr<TimeoutManager> manager) {
+    timeoutManager = manager;
+}
+
+bool SimulatedAnnealing::checkTimeout() const {
+    if (timeoutManager && timeoutManager->hasTimedOut()) {
+        return true;
+    }
+    return false;
+}
+
 void SimulatedAnnealing::setPerturbationProbabilities(double rotate, double move, double swap, 
                                                     double changeRep, double convertSym) {
     // Normalize probabilities to sum to 1.0
@@ -93,23 +274,17 @@ void SimulatedAnnealing::setPerturbationProbabilities(double rotate, double move
     probSwap = swap / sum;
     probChangeRepresentative = changeRep / sum;
     probConvertSymmetryType = convertSym / sum;
-    
-    // Update adaptive perturbation with same values
-    adaptivePerturbation = AdaptivePerturbation(probRotate, probMove, probSwap, 
-                                                probChangeRepresentative, probConvertSymmetryType);
 }
 
-/**
- * Sets the cost function weights
- */
 void SimulatedAnnealing::setCostWeights(double area, double wirelength) {
     areaWeight = area;
     wirelengthWeight = wirelength;
 }
 
-/**
- * Calculates the cost of a solution
- */
+void SimulatedAnnealing::setSeed(unsigned int seed) {
+    rng.seed(seed);
+}
+
 int SimulatedAnnealing::calculateCost(const shared_ptr<HBStarTree>& solution) const {
     if (!solution) return numeric_limits<int>::max();
     
@@ -127,166 +302,262 @@ int SimulatedAnnealing::calculateCost(const shared_ptr<HBStarTree>& solution) co
     return static_cast<int>(areaWeight * areaCost + wirelengthWeight * wirelengthCost);
 }
 
-/**
- * Performs a random perturbation on the current solution
- */
-bool SimulatedAnnealing::perturb() {
-    // Check for timeout
-    if (checkTimeout()) {
-        throw runtime_error("Timeout during perturbation");
+Move* SimulatedAnnealing::generateMove() {
+    // Try multiple times to generate a valid move
+    for (int attempt = 0; attempt < 5; attempt++) {
+        // Choose perturbation type based on probabilities
+        double randVal = uniformDist(rng);
+        
+        if (randVal < probRotate) {
+            // Rotate a random module
+            string moduleName = selectRandomRepresentativeModule();
+            if (moduleName.empty()) continue;
+            
+            lastOperation = "rotate";
+            return movePool.createMove("rotate", moduleName);
+        } 
+        else if (randVal < probRotate + probMove) {
+            // Move a node to a new position
+            string nodeName = selectRandomNode();
+            string newParentName = selectRandomNode();
+            
+            if (nodeName.empty() || newParentName.empty() || nodeName == newParentName) {
+                continue;
+            }
+            
+            // Randomly decide if the node should be a left or right child
+            bool asLeftChild = (uniformDist(rng) < 0.5);
+            
+            lastOperation = "move";
+            return movePool.createMove("move", nodeName, newParentName, asLeftChild);
+        } 
+        else if (randVal < probRotate + probMove + probSwap) {
+            // Swap two nodes
+            string nodeName1 = selectRandomNode();
+            string nodeName2 = selectRandomNode();
+            
+            if (nodeName1.empty() || nodeName2.empty() || nodeName1 == nodeName2) {
+                continue;
+            }
+            
+            lastOperation = "swap";
+            return movePool.createMove("swap", nodeName1, nodeName2);
+        } 
+        else if (randVal < probRotate + probMove + probSwap + probChangeRepresentative) {
+            // Change the representative of a symmetry pair
+            string symmetryGroupName = selectRandomSymmetryGroup();
+            if (symmetryGroupName.empty()) continue;
+            
+            // Get a random module from the symmetry group
+            const auto& symmetryGroups = currentSolution->getSymmetryGroups();
+            auto it = find_if(symmetryGroups.begin(), symmetryGroups.end(),
+                             [&symmetryGroupName](const shared_ptr<SymmetryGroup>& group) {
+                                 return group && group->getName() == symmetryGroupName;
+                             });
+            
+            if (it == symmetryGroups.end() || !(*it) || (*it)->getSymmetryPairs().empty()) {
+                continue;
+            }
+            
+            // Choose a random symmetry pair
+            const auto& pairs = (*it)->getSymmetryPairs();
+            uniform_int_distribution<int> pairDist(0, pairs.size() - 1);
+            const auto& pair = pairs[pairDist(rng)];
+            
+            // Randomly choose one of the modules in the pair
+            string moduleName = (uniformDist(rng) < 0.5) ? pair.first : pair.second;
+            
+            lastOperation = "changeRep";
+            return movePool.createMove("changeRep", symmetryGroupName, moduleName);
+        } 
+        else {
+            // Convert the symmetry type of a symmetry group
+            string symmetryGroupName = selectRandomSymmetryGroup();
+            if (symmetryGroupName.empty()) continue;
+            
+            lastOperation = "convertSym";
+            return movePool.createMove("convertSym", symmetryGroupName);
+        }
     }
     
-    // Choose perturbation type based on adaptive probabilities
-    double randVal = uniformDist(rng);
-    bool result = false;
-    const int maxAttempts = 3;  // Reduced from 5 to 3 for speed
+    // Could not generate a valid move after multiple attempts
+    cerr << "Warning: Failed to generate a valid move after 5 attempts" << endl;
+    return nullptr;
+}
+
+string SimulatedAnnealing::selectRandomRepresentativeModule() const {
+    if (!currentSolution) return "";
     
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-        if (randVal < adaptivePerturbation.getRotateProbability()) {
-            lastOperation = "rotate";
-            adaptivePerturbation.recordAttempt(lastOperation);
-            result = perturbRotate();
-        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                          adaptivePerturbation.getMoveProbability()) {
-            lastOperation = "move";
-            adaptivePerturbation.recordAttempt(lastOperation);
-            result = perturbMove();
-        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                          adaptivePerturbation.getMoveProbability() + 
-                          adaptivePerturbation.getSwapProbability()) {
-            lastOperation = "swap";
-            adaptivePerturbation.recordAttempt(lastOperation);
-            result = perturbSwap();
-        } else if (randVal < adaptivePerturbation.getRotateProbability() + 
-                          adaptivePerturbation.getMoveProbability() + 
-                          adaptivePerturbation.getSwapProbability() + 
-                          adaptivePerturbation.getChangeRepProbability()) {
-            lastOperation = "changeRep";
-            adaptivePerturbation.recordAttempt(lastOperation);
-            result = perturbChangeRepresentative();
-        } else {
-            lastOperation = "convertSym";
-            adaptivePerturbation.recordAttempt(lastOperation);
-            result = perturbConvertSymmetryType();
+    // Collect valid representative modules
+    vector<string> representativeModules;
+    
+    const auto& modules = currentSolution->getModules();
+    const auto& symmetryGroups = currentSolution->getSymmetryGroups();
+    
+    for (const auto& pair : modules) {
+        const string& moduleName = pair.first;
+        bool isRepresentative = false;
+        bool inAnyGroup = false;
+        
+        // Check if this module is in any symmetry group
+        for (const auto& group : symmetryGroups) {
+            if (!group) continue;
+            
+            bool isInThisGroup = false;
+            
+            // Check if module is in symmetry pairs
+            for (const auto& symmPair : group->getSymmetryPairs()) {
+                if (moduleName == symmPair.first || moduleName == symmPair.second) {
+                    isInThisGroup = true;
+                    inAnyGroup = true;
+                    
+                    // By convention, the second module in the pair is the representative
+                    if (moduleName == symmPair.second) {
+                        isRepresentative = true;
+                    }
+                    break;
+                }
+            }
+            
+            if (!isInThisGroup) {
+                // Check if module is a self-symmetric module
+                for (const auto& selfSym : group->getSelfSymmetric()) {
+                    if (moduleName == selfSym) {
+                        isInThisGroup = true;
+                        inAnyGroup = true;
+                        isRepresentative = true;  // Self-symmetric modules are always representatives
+                        break;
+                    }
+                }
+            }
+            
+            if (isRepresentative) break;  // No need to check other groups
         }
         
-        if (result) break;  // If perturbation succeeded, stop trying
+        // If not in any symmetry group, it is considered a representative
+        if (!inAnyGroup) {
+            isRepresentative = true;
+        }
         
-        // Try a different operation type for the next attempt
-        randVal = uniformDist(rng);
+        if (isRepresentative) {
+            representativeModules.push_back(moduleName);
+        }
     }
     
-    return result;
-}
-
-/**
- * Rotates a random module
- */
-bool SimulatedAnnealing::perturbRotate() {
-    string moduleName = selectRandomModule();
-    if (moduleName.empty()) return false;
-    
-    return currentSolution->rotateModule(moduleName);
-}
-
-/**
- * Moves a random node to a new position
- */
-bool SimulatedAnnealing::perturbMove() {
-    string nodeName = selectRandomNode();
-    string newParentName = selectRandomNode();
-    
-    if (nodeName.empty() || newParentName.empty() || nodeName == newParentName) {
-        return false;
+    if (representativeModules.empty()) {
+        cerr << "Warning: No representative modules found!" << endl;
+        return "";
     }
     
-    // Randomly decide if the node should be a left or right child
-    bool asLeftChild = (uniformDist(rng) < 0.5);
-    
-    return currentSolution->moveNode(nodeName, newParentName, asLeftChild);
+    // Select a random representative module
+    uniform_int_distribution<int> dist(0, representativeModules.size() - 1);
+    return representativeModules[dist(rng)];
 }
 
-/**
- * Swaps two random nodes
- */
-bool SimulatedAnnealing::perturbSwap() {
-    string nodeName1 = selectRandomNode();
-    string nodeName2 = selectRandomNode();
-    
-    if (nodeName1.empty() || nodeName2.empty() || nodeName1 == nodeName2) {
-        return false;
+bool SimulatedAnnealing::acceptMove(int costDifference, double temperature) const {
+    // Always accept moves that improve the solution
+    if (costDifference <= 0) {
+        return true;
     }
     
-    return currentSolution->swapNodes(nodeName1, nodeName2);
+    // For moves that worsen the solution, accept with a probability
+    double probability = exp(-costDifference / temperature);
+    return uniformDist(rng) < probability;
 }
 
-/**
- * Changes the representative of a symmetry pair in a random symmetry group
- */
-bool SimulatedAnnealing::perturbChangeRepresentative() {
-    string symmetryGroupName = selectRandomSymmetryGroup();
-    if (symmetryGroupName.empty()) return false;
-    
-    // Get a random module from the symmetry group
-    const auto& symmetryGroups = currentSolution->getSymmetryGroups();
-    auto it = find_if(symmetryGroups.begin(), symmetryGroups.end(),
-                      [&symmetryGroupName](const shared_ptr<SymmetryGroup>& group) {
-                          return group && group->getName() == symmetryGroupName;
-                      });
-    
-    if (it == symmetryGroups.end() || !(*it) || (*it)->getSymmetryPairs().empty()) {
-        return false;
-    }
-    
-    // Choose a random symmetry pair
-    const auto& pairs = (*it)->getSymmetryPairs();
-    uniform_int_distribution<int> pairDist(0, pairs.size() - 1);
-    const auto& pair = pairs[pairDist(rng)];
-    
-    // Randomly choose one of the modules in the pair
-    string moduleName = (uniformDist(rng) < 0.5) ? pair.first : pair.second;
-    
-    return currentSolution->changeRepresentative(symmetryGroupName, moduleName);
-}
-
-/**
- * Converts the symmetry type of a random symmetry group
- */
-bool SimulatedAnnealing::perturbConvertSymmetryType() {
-    string symmetryGroupName = selectRandomSymmetryGroup();
-    if (symmetryGroupName.empty()) return false;
-    
-    return currentSolution->convertSymmetryType(symmetryGroupName);
-}
-
-/**
- * Select a random module
- */
+// In SA.cpp
 string SimulatedAnnealing::selectRandomModule() const {
     if (!currentSolution) return "";
     
-    const auto& modules = currentSolution->getModules();
-    if (modules.empty()) return "";
+    // Only select representative modules for operations
+    vector<string> representativeModules;
     
-    // Convert map to vector for random selection
-    vector<string> moduleNames;
-    moduleNames.reserve(modules.size());
+    // Get all symmetry groups to check for representatives
+    const auto& symmetryGroups = currentSolution->getSymmetryGroups();
+    const auto& modules = currentSolution->getModules();
     
     for (const auto& pair : modules) {
-        if (pair.second) {
-            moduleNames.push_back(pair.first);
+        const string& moduleName = pair.first;
+        bool isRepresentative = false;
+        
+        // Check if this module is a representative in any symmetry group
+        for (const auto& group : symmetryGroups) {
+            if (!group) continue;
+            
+            // Check if the module is a representative in this group
+            for (const auto& symmPair : group->getSymmetryPairs()) {
+                // For each symmetry pair, determine the representative
+                string repName = (symmPair.first < symmPair.second) ? 
+                                  symmPair.second : symmPair.first;
+                
+                if (moduleName == repName) {
+                    isRepresentative = true;
+                    break;
+                }
+            }
+            
+            // Also check self-symmetric modules
+            for (const auto& selfSym : group->getSelfSymmetric()) {
+                if (moduleName == selfSym) {
+                    isRepresentative = true;
+                    break;
+                }
+            }
+            
+            if (isRepresentative) break;
+        }
+        
+        // For modules not in any symmetry group, they are also representatives
+        if (!isRepresentative) {
+            bool inAnyGroup = false;
+            for (const auto& group : symmetryGroups) {
+                if (!group) continue;
+                
+                if (group->isInGroup(moduleName)) {
+                    inAnyGroup = true;
+                    break;
+                }
+            }
+            
+            if (!inAnyGroup) {
+                isRepresentative = true;
+            }
+        }
+        
+        // Add to the list if it's a representative
+        if (isRepresentative) {
+            representativeModules.push_back(moduleName);
         }
     }
     
-    if (moduleNames.empty()) return "";
+    // If no representatives found, try a different approach or return empty
+    if (representativeModules.empty()) {
+        // Fallback: assume all non-symmetry modules are representatives
+        for (const auto& pair : modules) {
+            bool inAnyGroup = false;
+            for (const auto& group : symmetryGroups) {
+                if (!group) continue;
+                
+                if (group->isInGroup(pair.first)) {
+                    inAnyGroup = true;
+                    break;
+                }
+            }
+            
+            if (!inAnyGroup) {
+                representativeModules.push_back(pair.first);
+            }
+        }
+    }
     
-    uniform_int_distribution<int> dist(0, moduleNames.size() - 1);
-    return moduleNames[dist(rng)];
+    // If still no representatives, return empty
+    if (representativeModules.empty()) return "";
+    
+    // Select a random representative module
+    uniform_int_distribution<int> dist(0, representativeModules.size() - 1);
+    return representativeModules[dist(rng)];
 }
 
-/**
- * Select a random symmetry group
- */
 string SimulatedAnnealing::selectRandomSymmetryGroup() const {
     if (!currentSolution) return "";
     
@@ -307,9 +578,6 @@ string SimulatedAnnealing::selectRandomSymmetryGroup() const {
     return validGroups[dist(rng)];
 }
 
-/**
- * Select a random node (module or symmetry group)
- */
 string SimulatedAnnealing::selectRandomNode() const {
     if (!currentSolution) return "";
     
@@ -352,23 +620,122 @@ string SimulatedAnnealing::selectRandomNode() const {
     return "";
 }
 
-/**
- * Decides whether to accept a move based on the cost difference and temperature
- */
-bool SimulatedAnnealing::acceptMove(int costDifference, double temperature) const {
-    // Always accept moves that improve the solution
-    if (costDifference <= 0) {
-        return true;
+void SimulatedAnnealing::initializeTemperature() {
+    // Measure average delta cost over random moves
+    const int sampleSize = 500;
+    double totalDelta = 0.0;
+    int validSamples = 0;
+    
+    cout << "Sampling " << sampleSize << " random moves to initialize temperature..." << endl;
+    
+    for (int i = 0; i < sampleSize; ++i) {
+        auto move = generateMove();
+        if (!move) continue;
+        
+        int costBefore = calculateCost(currentSolution);
+        applyMove(move);
+        currentSolution->pack();
+        int costAfter = calculateCost(currentSolution);
+        
+        // Undo the move
+        undoMove(move);
+        currentSolution->pack();
+        
+        // Release the move back to the pool
+        movePool.releaseMove(move);
+        
+        // Accumulate the absolute difference, but check for valid values
+        int deltaCost = abs(costAfter - costBefore);
+        if (deltaCost > 0 && deltaCost < INT_MAX / 2) {
+            totalDelta += deltaCost;
+            validSamples++;
+        }
     }
     
-    // For moves that worsen the solution, accept with a probability
-    double probability = exp(-costDifference / temperature);
-    return uniformDist(rng) < probability;
+    // Calculate average delta, with safeguards
+    double avgDelta = (validSamples > 0) ? totalDelta / validSamples : 1000.0;
+    
+    // Apply reasonable caps to the temperature
+    const double MIN_TEMPERATURE = 100.0;
+    const double MAX_TEMPERATURE = 10000.0;  // 1 million - much lower than 40 million
+    
+    // Calculate temperature according to formula, but with bounds
+    double calculatedTemp = -avgDelta / log(0.8);
+    initialTemperature = std::max(MIN_TEMPERATURE, std::min(calculatedTemp, MAX_TEMPERATURE));
+    
+    cout << "Calculated temperature from " << validSamples << " samples:" << endl;
+    cout << "  Average cost delta: " << avgDelta << endl;
+    cout << "  Raw calculated temperature: " << calculatedTemp << endl;
+    cout << "  Capped initial temperature: " << initialTemperature << endl;
+    
+    // Make sure we have a valid best solution
+    if (!bestSolution) {
+        bestSolution = currentSolution->clone();
+        bestCost = calculateCost(currentSolution);
+    }
 }
 
-/**
- * Validates the best solution for overlaps
- */
+bool SimulatedAnnealing::processTemperature(double temperature) {
+    bool improved = false;
+    
+    // Clear accepted move history for this temperature
+    for (auto* move : acceptedMoveHistory) {
+        movePool.releaseMove(move);
+    }
+    acceptedMoveHistory.clear();
+    
+    for (int i = 0; i < movesPerTemperature; ++i) {
+        // Check for timeout periodically
+        if (i % 100 == 0 && checkTimeout()) {
+            throw runtime_error("Timeout occurred during temperature processing");
+        }
+        
+        // Generate a random move
+        auto move = generateMove();
+        if (!move) continue;
+        
+        // Calculate cost before the move
+        int costBefore = calculateCost(currentSolution);
+        
+        // Apply the move
+        applyMove(move);
+        
+        // Pack the solution to get updated coordinates
+        currentSolution->pack();
+        
+        // Calculate new cost
+        int costAfter = calculateCost(currentSolution);
+        int costDifference = costAfter - costBefore;
+        
+        // Decide whether to accept the move
+        if (acceptMove(costDifference, temperature)) {
+            // Accept the move
+            acceptedMoves++;
+            acceptedMoveHistory.push_back(move);
+            
+            // Update best solution if improved
+            if (costAfter < bestCost) {
+                bestSolution = currentSolution->clone();
+                bestCost = costAfter;
+                improved = true;
+                noImprovementCount = 0;
+            } else {
+                noImprovementCount++;
+            }
+        } else {
+            // Reject the move
+            undoMove(move);
+            currentSolution->pack();
+            movePool.releaseMove(move);
+            rejectedMoves++;
+        }
+        
+        totalIterations++;
+    }
+    
+    return improved;
+}
+
 void SimulatedAnnealing::validateBestSolution() {
     if (!bestSolution) return;
     
@@ -408,9 +775,6 @@ void SimulatedAnnealing::validateBestSolution() {
     }
 }
 
-/**
- * Runs the SA
- */
 shared_ptr<HBStarTree> SimulatedAnnealing::run() {
     try {
         double temperature = initialTemperature;
@@ -436,15 +800,20 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
             return bestSolution;
         }
         
-        // Calculate total iterations before we'd reach final temperature
-        int totalTemperatureSteps = ceil(log(finalTemperature/initialTemperature) / log(coolingRate));
-        int estimatedTotalIterations = totalTemperatureSteps * iterationsPerTemperature;
+        cout << "Starting SA with initial temperature " << temperature << endl;
+        cout << "Initial cost: " << currentCost << endl;
         
-        cout << "Starting SA with estimated " << estimatedTotalIterations 
-             << " iterations over " << totalTemperatureSteps << " temperature steps" << endl;
+        // Log MovePool stats
+        cout << "MovePool status: " << movePool.getAllocatedBlocks() << " blocks, " 
+             << movePool.getFreeListSize() << " free moves" << endl;
+        
+        int consecNoImprovement = 0;
+        int lastReportedCost = currentCost;
+        int passCount = 0;
         
         // Main annealing loop
-        while (temperature > finalTemperature && noImprovementCount < noImprovementLimit) {
+        while (temperature > finalTemperature) {
+            passCount++;
             // Check for timeout at the beginning of each temperature
             if (checkTimeout()) {
                 cout << "Timeout detected at temperature " << temperature 
@@ -453,120 +822,50 @@ shared_ptr<HBStarTree> SimulatedAnnealing::run() {
                 return bestSolution;
             }
             
-            // Perform iterations at current temperature
-            for (int i = 0; i < iterationsPerTemperature; ++i) {
-                // Check for timeout every few iterations
-                if (i % 5 == 0 && checkTimeout()) {
-                    cout << "Timeout detected during iteration " << i 
-                         << " at temperature " << temperature << "." << endl;
-                    validateBestSolution();
-                    return bestSolution;
-                }
+            // Process one temperature level
+            cout << "Starting temperature pass " << passCount 
+                 << " at T=" << temperature << endl;
+            
+            bool improved = processTemperature(temperature);
+            
+            // Report detailed stats for this temperature level
+            double acceptRate = (acceptedMoves > 0) ? 
+                static_cast<double>(acceptedMoves) / (acceptedMoves + rejectedMoves) * 100.0 : 0.0;
+            
+            cout << "Temperature: " << temperature 
+                 << ", Best cost: " << bestCost 
+                 << ", Current cost: " << currentCost 
+                 << ", Delta: " << (lastReportedCost - currentCost)
+                 << ", Accept rate: " << acceptRate << "%" 
+                 << ", Consec no improvement: " << consecNoImprovement 
+                 << endl;
+                 
+            lastReportedCost = currentCost;
+            
+            // Check for stagnation
+            if (!improved) {
+                consecNoImprovement++;
                 
-                try {
-                    // Create a copy of the current solution
-                    auto tempSolution = currentSolution->clone();
-                    
-                    // Perturb the solution
-                    bool perturbSuccess = perturb();
-                    if (!perturbSuccess) {
-                        continue;  // Skip this iteration if perturbation failed
-                    }
-                    
-                    // Pack the solution to get updated coordinates and area
-                    currentSolution->pack();
-                    
-                    // Calculate new cost
-                    int newCost = calculateCost(currentSolution);
-                    
-                    // Decide whether to accept the move
-                    int costDifference = newCost - currentCost;
-                    if (acceptMove(costDifference, temperature)) {
-                        // Accept the move
-                        currentCost = newCost;
-                        acceptedMoves++;
-                        
-                        // Record success and improvement for adaptive perturbation
-                        if (costDifference < 0) {
-                            adaptivePerturbation.recordSuccess(lastOperation, -costDifference);
-                            
-                            // Update best solution if improved
-                            if (newCost < bestCost) {
-                                // Create a deep copy of the current solution
-                                bestSolution = currentSolution->clone();
-                                bestCost = newCost;
-                                
-                                cout << "New best solution found: " << bestCost << endl;
-                                noImprovementCount = 0;
-                            } else {
-                                noImprovementCount++;
-                            }
-                        } else {
-                            noImprovementCount++;
-                        }
-                    } else {
-                        // Reject the move
-                        currentSolution = tempSolution;
-                        rejectedMoves++;
-                        noImprovementCount++;
-                    }
-                    
-                    totalIterations++;
-                    
-                    // Update perturbation probabilities periodically
-                    if (totalIterations % 50 == 0) {
-                        adaptivePerturbation.updateProbabilities();
-                    }
-                } 
-                catch (const runtime_error& e) {
-                    if (string(e.what()).find("Timeout") != string::npos) {
-                        // Timeout detected during perturbation or packing
-                        validateBestSolution();
-                        return bestSolution;
-                    } else {
-                        // Other runtime errors - log and continue
-                        cerr << "Error during SA iteration: " << e.what() << endl;
-                        continue;
-                    }
+                // If stagnant for 3 consecutive temperatures, apply extra cooling
+                if (consecNoImprovement >= noImprovementLimit) {
+                    double oldTemp = temperature;
+                    temperature *= 0.5;  // Extra cooling
+                    consecNoImprovement = 0;
+                    cout << "Applying extra cooling due to stagnation. " 
+                         << "Temperature: " << oldTemp << " -> " << temperature << endl;
                 }
+            } else {
+                consecNoImprovement = 0;
+                cout << "Solution improved! New best cost: " << bestCost << endl;
             }
             
-            // Check for timeout after a temperature cycle
-            if (checkTimeout()) {
-                cout << "Timeout detected after completing temperature " << temperature << "." << endl;
-                validateBestSolution();
-                return bestSolution;
-            }
-            
-            // Cool down
+            // Regular cooling
             temperature *= coolingRate;
             
-            // Print progress including adaptive perturbation statistics every 5 temperature steps
-            static int tempSteps = 0;
-            tempSteps++;
-            
-            if (tempSteps % 5 == 0) {
-                cout << "Temperature: " << temperature 
-                     << ", Best cost: " << bestCost 
-                     << ", Current cost: " << currentCost 
-                     << ", No improvement: " << noImprovementCount 
-                     << endl;
-                
-                // Print adaptive perturbation statistics
-                adaptivePerturbation.printStats();
-            } else {
-                cout << "Temperature: " << temperature 
-                     << ", Best cost: " << bestCost 
-                     << ", Current cost: " << currentCost 
-                     << ", No improvement: " << noImprovementCount 
-                     << endl;
-            }
-            
-            // Check if we need to accelerate cooling
-            if (noImprovementCount > noImprovementLimit / 2) {
-                // No improvement for a while, cool faster
-                temperature *= coolingRate; // Double the cooling effect
-                cout << "Accelerating cooling - no improvement for " << noImprovementCount << " iterations" << endl;
+            // Log MovePool stats periodically
+            if (passCount % 10 == 0) {
+                cout << "MovePool status: " << movePool.getAllocatedBlocks() << " blocks, " 
+                     << movePool.getFreeListSize() << " free moves" << endl;
             }
         }
         
@@ -601,9 +900,6 @@ int SimulatedAnnealing::getBestCost() const {
     return bestCost;
 }
 
-/**
- * Gets statistics about the annealing process
- */
 map<string, int> SimulatedAnnealing::getStatistics() const {
     map<string, int> stats;
     stats["totalIterations"] = totalIterations;
@@ -611,11 +907,4 @@ map<string, int> SimulatedAnnealing::getStatistics() const {
     stats["rejectedMoves"] = rejectedMoves;
     stats["noImprovementCount"] = noImprovementCount;
     return stats;
-}
-
-/**
- * Sets the random seed for reproducible results
- */
-void SimulatedAnnealing::setSeed(unsigned int seed) {
-    rng.seed(seed);
 }

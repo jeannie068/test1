@@ -353,7 +353,7 @@ bool ASFBStarTree::rotateModule(const string& moduleName) {
     
     // Check if this is a representative module
     if (!isRepresentative(moduleName)) {
-        cerr << "Error: Can only rotate representative modules" << endl;
+        // cerr << "Error: Can only rotate representative modules" << endl;
         return false;
     }
     
